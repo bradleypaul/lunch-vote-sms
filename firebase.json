@@ -1,0 +1,27 @@
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "runtime": "nodejs20",
+      "ignore": ["node_modules", ".git", "test", "*.test.ts"],
+      "predeploy": ["npm --prefix functions run build"]
+    }
+  ],
+  "firestore": {
+    "rules": "functions/firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "functions": {
+      "port": 5001
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "ui": {
+      "enabled": true
+    },
+    "singleProject": true
+  }
+}
