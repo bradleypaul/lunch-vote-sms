@@ -1,5 +1,6 @@
-import { COLLECTIONS, DIGEST_DOC_ID, POLL_STATUS } from "./config";
+import { CLASSIFY_CONFIDENCE_THRESHOLD, COLLECTIONS, DIGEST_DOC_ID, POLL_STATUS } from "./config";
 import { parseApprovalReply } from "./voteParsing";
+import { classifyApprovalReply } from "./classifyApprovalReply";
 import { sendFinalAnnouncement } from "./sendFinalAnnouncement";
 
 interface PollDoc {
@@ -13,9 +14,11 @@ interface DigestDoc {
 
 /**
  * Handles a reply from the owner's own number. Only acts on a poll that's
- * currently awaiting_approval; anything that doesn't parse as "approve" or
- * a well-formed "override <option>" is left alone — same as any other text
- * — so the owner can just reply again with something clearer.
+ * currently awaiting_approval. The exact-keyword parse ("approve" / "override
+ * <option>") is tried first since it's free and instant; anything looser
+ * ("yeah let's do chipotle") falls back to a Haiku classification. Anything
+ * neither one can place with confidence is left alone — same as any other
+ * text — so the owner can just reply again with something clearer.
  */
 export async function handleApproval(db: FirebaseFirestore.Firestore, message: string): Promise<void> {
   const pendingSnap = await db
@@ -31,8 +34,11 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
 
   const pollDoc = pendingSnap.docs[0];
   const poll = pollDoc.data() as PollDoc;
+  const options = poll.options ?? [];
 
-  const reply = parseApprovalReply(message, poll.options ?? []);
+  const reply =
+    parseApprovalReply(message, options) ??
+    (await classifyApprovalReply(message, options, CLASSIFY_CONFIDENCE_THRESHOLD));
   if (!reply) {
     console.log(`approvalHandler: unparseable reply pollId=${pollDoc.id}`);
     return;
