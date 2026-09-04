@@ -5,11 +5,11 @@ import {
   COLLECTIONS,
   FIRESTORE_REGION,
   POLL_STATUS,
-  SMS_GATEWAY_LOGIN,
-  SMS_GATEWAY_PASSWORD,
   TIMEZONE,
+  TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN,
 } from "./config";
-import { sendMessage } from "./gatewayClient";
+import { sendMessage } from "./smsClient";
 
 interface PollDoc {
   options: string[];
@@ -31,7 +31,7 @@ export const sendAnnouncement = onSchedule(
     schedule: ANNOUNCEMENT_SCHEDULE,
     timeZone: TIMEZONE,
     region: FIRESTORE_REGION,
-    secrets: [SMS_GATEWAY_LOGIN, SMS_GATEWAY_PASSWORD],
+    secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN],
   },
   async () => {
     const db = admin.firestore();
