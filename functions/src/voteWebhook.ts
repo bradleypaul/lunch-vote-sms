@@ -7,13 +7,11 @@ import {
   FIRESTORE_REGION,
   MY_PHONE_NUMBER,
   POLL_STATUS,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  VOTE_WEBHOOK_URL,
+  SMS_GATEWAY_WEBHOOK_SECRET,
   hashPhoneNumber,
   normalizePhoneDigits,
 } from "./config";
-import { verifyTwilioSignature } from "./twilioSignature";
+import { verifySmsGatewaySignature } from "./smsGatewaySignature";
 import { classifyVote } from "./classifyVote";
 import { handleApproval } from "./approvalHandler";
 
@@ -28,15 +26,16 @@ interface HttpResponse {
 }
 
 /**
- * HTTPS endpoint Twilio calls (as the inbound-message webhook) whenever a
- * text arrives on the group's number. Verifies the request, then branches
- * on sender: the owner's own number goes to the approval flow, everyone
- * else's reply gets classified against the open poll.
+ * HTTPS endpoint the SMS Gateway for Android app calls (as the
+ * "sms:received" webhook) whenever a text arrives on the group's phone.
+ * Verifies the request, then branches on sender: the owner's own number
+ * goes to the approval flow, everyone else's reply gets classified against
+ * the open poll.
  *
  * Every rejection path (bad signature, no open poll, unknown sender,
  * low-confidence classification) returns 2xx/4xx with a distinct,
  * greppable log line instead of throwing — an uncaught error here would
- * surface as a 500 and likely trigger Twilio retries for a request that
+ * surface as a 500 and likely trigger gateway retries for a request that
  * will never succeed. There's no automated reply to the group by design
  * (see README) — a non-match just stays an ordinary text in the owner's
  * inbox.
@@ -44,7 +43,7 @@ interface HttpResponse {
 export const voteWebhook = onRequest(
   {
     region: FIRESTORE_REGION,
-    secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ANTHROPIC_API_KEY, MY_PHONE_NUMBER],
+    secrets: [SMS_GATEWAY_WEBHOOK_SECRET, ANTHROPIC_API_KEY, MY_PHONE_NUMBER],
   },
   async (req, res) => {
     const inbound = parseInboundSms(req, res);
@@ -93,6 +92,14 @@ export const voteWebhook = onRequest(
   }
 );
 
+interface SmsReceivedWebhook {
+  event: string;
+  payload?: {
+    phoneNumber?: string;
+    message?: string;
+  };
+}
+
 function parseInboundSms(
   req: Request,
   res: HttpResponse
@@ -102,23 +109,29 @@ function parseInboundSms(
     return null;
   }
 
-  const params = req.body as Record<string, string>;
-  const signatureValid = verifyTwilioSignature(
-    VOTE_WEBHOOK_URL.value(),
-    params ?? {},
-    req.header("X-Twilio-Signature"),
-    TWILIO_AUTH_TOKEN.value()
+  const signatureValid = verifySmsGatewaySignature(
+    req.rawBody,
+    req.header("X-Timestamp"),
+    req.header("X-Signature"),
+    SMS_GATEWAY_WEBHOOK_SECRET.value()
   );
   if (!signatureValid) {
-    console.error("voteWebhook: rejected, invalid or missing Twilio signature");
+    console.error("voteWebhook: rejected, invalid or missing SMS Gateway signature");
     res.status(401).send("invalid signature");
     return null;
   }
 
-  const sender = params?.From;
-  const message = params?.Body ?? "";
+  const body = req.body as SmsReceivedWebhook;
+  if (body?.event !== "sms:received") {
+    console.log(`voteWebhook: ignored, event=${body?.event}`);
+    res.status(200).send("ignored");
+    return null;
+  }
+
+  const sender = body.payload?.phoneNumber;
+  const message = body.payload?.message ?? "";
   if (!sender) {
-    console.error("voteWebhook: rejected, payload missing From");
+    console.error("voteWebhook: rejected, payload missing phoneNumber");
     res.status(400).send("missing sender");
     return null;
   }

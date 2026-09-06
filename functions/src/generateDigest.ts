@@ -10,9 +10,9 @@ import {
   HAIKU_MODEL,
   MY_PHONE_NUMBER,
   POLL_STATUS,
+  SMS_GATEWAY_PASSWORD,
+  SMS_GATEWAY_USERNAME,
   TIMEZONE,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
 } from "./config";
 import { sendMessage } from "./smsClient";
 
@@ -70,7 +70,7 @@ export const generateDigest = onSchedule(
     schedule: DIGEST_SCHEDULE,
     timeZone: TIMEZONE,
     region: FIRESTORE_REGION,
-    secrets: [ANTHROPIC_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, MY_PHONE_NUMBER],
+    secrets: [ANTHROPIC_API_KEY, SMS_GATEWAY_USERNAME, SMS_GATEWAY_PASSWORD, MY_PHONE_NUMBER],
   },
   async () => {
     const db = admin.firestore();

@@ -1,29 +1,20 @@
-import { defineSecret, defineString } from "firebase-functions/params";
+import { defineSecret } from "firebase-functions/params";
 import * as crypto from "crypto";
 
 /**
- * Twilio account credentials (console.twilio.com), stored in Secret
- * Manager — never committed. TWILIO_AUTH_TOKEN also doubles as the key
- * used to verify inbound webhook signatures (see twilioSignature.ts).
+ * Basic-auth credentials for the SMS Gateway for Android app running in
+ * Cloud mode on the group's dedicated phone (sms-gate.app), stored in
+ * Secret Manager — never committed. Shown in the app's own settings screen.
  */
-export const TWILIO_ACCOUNT_SID = defineSecret("TWILIO_ACCOUNT_SID");
-export const TWILIO_AUTH_TOKEN = defineSecret("TWILIO_AUTH_TOKEN");
+export const SMS_GATEWAY_USERNAME = defineSecret("SMS_GATEWAY_USERNAME");
+export const SMS_GATEWAY_PASSWORD = defineSecret("SMS_GATEWAY_PASSWORD");
 
 /**
- * The Twilio toll-free number texts are sent from, in E.164 format
- * (+1XXXXXXXXXX). Not a secret — it's the public sender identity everyone
- * in the group sees.
+ * The signing key configured for the app's "sms:received" webhook (set in
+ * the app's own webhook settings). Used to verify the HMAC-SHA256 signature
+ * on inbound webhook requests — see smsGatewaySignature.ts.
  */
-export const TWILIO_FROM_NUMBER = defineString("TWILIO_FROM_NUMBER");
-
-/**
- * The exact public URL Twilio is configured to POST inbound messages to
- * (voteWebhook's deployed URL). Twilio's request-signature check is an
- * exact-string match against the URL it actually called, so this has to
- * match the webhook URL set in the Twilio console precisely — see README
- * "Webhook verification".
- */
-export const VOTE_WEBHOOK_URL = defineString("VOTE_WEBHOOK_URL");
+export const SMS_GATEWAY_WEBHOOK_SECRET = defineSecret("SMS_GATEWAY_WEBHOOK_SECRET");
 
 /**
  * Anthropic API key (console.claude.com) used for vote classification and
