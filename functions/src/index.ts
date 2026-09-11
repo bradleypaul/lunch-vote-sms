@@ -5,3 +5,4 @@ admin.initializeApp();
 export { voteWebhook } from "./voteWebhook";
 export { sendAnnouncement } from "./sendAnnouncement";
 export { generateDigest } from "./generateDigest";
+export { generateIdeaDigest } from "./generateIdeaDigest";

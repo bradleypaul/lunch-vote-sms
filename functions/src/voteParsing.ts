@@ -74,3 +74,62 @@ export function parseApprovalReply(rawBody: string, options: readonly string[]):
 
   return null;
 }
+
+export type PromptReply = "yes" | "no" | "maybe";
+
+// Keyword sets are already in normalizeText's output form (no apostrophes,
+// single spaces) since normalizeText strips punctuation before comparing.
+const YES_KEYWORDS = new Set(["yes", "yep", "yup", "sure", "im in", "count me in", "lets go", "sounds good"]);
+const NO_KEYWORDS = new Set(["no", "nope", "cant", "cant make it", "not this time", "pass"]);
+const MAYBE_KEYWORDS = new Set(["maybe", "not sure", "possibly", "tbd", "well see"]);
+
+/**
+ * Parses a reply to a yes/no/maybe prompt (e.g. "want to host?", "want to
+ * go?"). Deliberately simple keyword matching as a free, instant fast path
+ * — the caller falls back to an LLM classification for anything this
+ * doesn't recognize (see promptReplyHandler).
+ */
+export function parsePromptReply(rawBody: string): PromptReply | null {
+  const normalized = normalizeText(rawBody);
+  if (YES_KEYWORDS.has(normalized)) {
+    return "yes";
+  }
+  if (NO_KEYWORDS.has(normalized)) {
+    return "no";
+  }
+  if (MAYBE_KEYWORDS.has(normalized)) {
+    return "maybe";
+  }
+  return null;
+}
+
+export interface InviteCommand {
+  name: string | null;
+  phoneNumber: string;
+}
+
+/**
+ * Parses the owner's "invite <phone>" or "invite <name> <phone>" command.
+ * The phone number must be the message's last word, normalizing (digits
+ * only) to exactly 10 or 11 digits (a US number, with or without a leading
+ * country code) — anything before it is taken as the name. Returns null if
+ * the message doesn't start with "invite" or the last word isn't a
+ * plausible phone number, so the caller can fall through to treating it as
+ * an ordinary approval reply instead.
+ */
+export function parseInviteCommand(rawBody: string): InviteCommand | null {
+  const match = rawBody.trim().match(/^invite\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const words = match[1].trim().split(/\s+/);
+  const lastWord = words[words.length - 1];
+  const digits = lastWord.replace(/[^\d]/g, "");
+  if (digits.length !== 10 && digits.length !== 11) {
+    return null;
+  }
+
+  const name = words.slice(0, -1).join(" ").trim();
+  return { name: name || null, phoneNumber: lastWord };
+}

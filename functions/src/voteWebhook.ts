@@ -1,5 +1,6 @@
 import { onRequest, Request } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import {
   ANTHROPIC_API_KEY,
   CLASSIFY_CONFIDENCE_THRESHOLD,
@@ -7,15 +8,21 @@ import {
   FIRESTORE_REGION,
   MY_PHONE_NUMBER,
   POLL_STATUS,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  VOTE_WEBHOOK_URL,
+  SMS_GATEWAY_LOGIN,
+  SMS_GATEWAY_PASSWORD,
+  WEBHOOK_SIGNING_SECRET,
   hashPhoneNumber,
   normalizePhoneDigits,
 } from "./config";
-import { verifyTwilioSignature } from "./twilioSignature";
+import { verifyWebhookSignature } from "./webhookSignature";
 import { classifyVote } from "./classifyVote";
+import { classifyActivityIdea } from "./classifyActivityIdea";
 import { handleApproval } from "./approvalHandler";
+import { handlePromptReply } from "./promptReplyHandler";
+import { handleActivityIdea } from "./activityIdeaHandler";
+import { handleInviteCommand } from "./inviteHandler";
+import { handleSignupReply } from "./signupHandler";
+import { safeClassify } from "./safeClassify";
 
 interface PollDoc {
   options: string[];
@@ -23,20 +30,29 @@ interface PollDoc {
   status: string;
 }
 
+interface GroupMemberDoc {
+  active: boolean;
+  pendingPrompt?: { ideaId: string };
+}
+
 interface HttpResponse {
   status(code: number): { send(body: string): unknown };
 }
 
 /**
- * HTTPS endpoint Twilio calls (as the inbound-message webhook) whenever a
- * text arrives on the group's number. Verifies the request, then branches
- * on sender: the owner's own number goes to the approval flow, everyone
- * else's reply gets classified against the open poll.
+ * HTTPS endpoint SMS Gateway's cloud relay calls (as the `sms:received`
+ * webhook) whenever a text arrives on the phone. Verifies the request,
+ * then branches on sender: the owner's texts are tried as an "invite
+ * <phone>" command first, falling back to an approval reply; a pending
+ * (invited but not yet active) member's texts are read as a yes/no signup
+ * answer; and an active member's texts try each interpretation in order —
+ * an answer to a pending host/outing prompt, a vote against an open poll,
+ * or a new activity-idea proposal.
  *
- * Every rejection path (bad signature, no open poll, unknown sender,
+ * Every rejection/no-match path (bad signature, unknown sender,
  * low-confidence classification) returns 2xx/4xx with a distinct,
  * greppable log line instead of throwing — an uncaught error here would
- * surface as a 500 and likely trigger Twilio retries for a request that
+ * surface as a 500 and likely trigger relay retries for a request that
  * will never succeed. There's no automated reply to the group by design
  * (see README) — a non-match just stays an ordinary text in the owner's
  * inbox.
@@ -44,7 +60,7 @@ interface HttpResponse {
 export const voteWebhook = onRequest(
   {
     region: FIRESTORE_REGION,
-    secrets: [TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ANTHROPIC_API_KEY, MY_PHONE_NUMBER],
+    secrets: [SMS_GATEWAY_LOGIN, SMS_GATEWAY_PASSWORD, WEBHOOK_SIGNING_SECRET, ANTHROPIC_API_KEY, MY_PHONE_NUMBER],
   },
   async (req, res) => {
     const inbound = parseInboundSms(req, res);
@@ -56,42 +72,78 @@ export const voteWebhook = onRequest(
     const db = admin.firestore();
 
     if (normalizePhoneDigits(sender) === normalizePhoneDigits(MY_PHONE_NUMBER.value())) {
-      await handleApproval(db, message);
+      const wasInvite = await handleInviteCommand(db, message);
+      if (!wasInvite) {
+        await handleApproval(db, message);
+      }
       res.status(200).send("ok");
       return;
     }
 
     const phoneHash = hashPhoneNumber(sender);
-    if (!(await isActiveGroupMember(db, phoneHash))) {
-      console.log(`voteWebhook: rejected, unknown or inactive sender phoneHash=${phoneHash}`);
+    const memberRef = db.collection(COLLECTIONS.groupMembers).doc(phoneHash);
+    const memberSnap = await memberRef.get();
+    if (!memberSnap.exists) {
+      console.log(`voteWebhook: rejected, unknown sender phoneHash=${phoneHash}`);
       res.status(200).send("unknown sender");
       return;
     }
 
+    const member = memberSnap.data() as GroupMemberDoc;
+    if (!member.active) {
+      await handleSignupReply(db, phoneHash, message);
+      res.status(200).send("ok");
+      return;
+    }
+
+    if (member.pendingPrompt) {
+      await handlePromptReply(db, phoneHash, member.pendingPrompt, message);
+      res.status(200).send("ok");
+      return;
+    }
+
     const pollDoc = await findOpenPoll(db);
-    if (!pollDoc) {
-      console.log(`voteWebhook: rejected, no open poll phoneHash=${phoneHash}`);
-      res.status(200).send("no open poll");
-      return;
-    }
-
-    const poll = pollDoc.data() as PollDoc;
-    const classification = await classifyVote(message, poll.options ?? [], poll.optionTags ?? {});
-    if (!classification.matchedOption || classification.confidence < CLASSIFY_CONFIDENCE_THRESHOLD) {
-      console.log(
-        `voteWebhook: below confidence threshold pollId=${pollDoc.id} phoneHash=${phoneHash} confidence=${classification.confidence}`
+    if (pollDoc) {
+      const poll = pollDoc.data() as PollDoc;
+      const classification = await safeClassify(
+        `voteWebhook classifyVote pollId=${pollDoc.id} phoneHash=${phoneHash}`,
+        { matchedOption: null, confidence: 0 },
+        () => classifyVote(message, poll.options ?? [], poll.optionTags ?? {})
       );
-      res.status(200).send("not confident enough");
+      if (classification.matchedOption && classification.confidence >= CLASSIFY_CONFIDENCE_THRESHOLD) {
+        await recordVote(pollDoc, phoneHash, classification.matchedOption, classification.confidence, message);
+        console.log(
+          `voteWebhook: recorded vote pollId=${pollDoc.id} phoneHash=${phoneHash} choice=${classification.matchedOption} confidence=${classification.confidence}`
+        );
+        res.status(200).send("ok");
+        return;
+      }
+    }
+
+    const idea = await safeClassify(
+      `voteWebhook classifyActivityIdea phoneHash=${phoneHash}`,
+      { isIdea: false, kind: null, activity: "", confidence: 0 },
+      () => classifyActivityIdea(message)
+    );
+    if (idea.isIdea && idea.kind && idea.confidence >= CLASSIFY_CONFIDENCE_THRESHOLD) {
+      await handleActivityIdea(db, phoneHash, { kind: idea.kind, activity: idea.activity });
+      console.log(`voteWebhook: activity idea phoneHash=${phoneHash} kind=${idea.kind} confidence=${idea.confidence}`);
+      res.status(200).send("ok");
       return;
     }
 
-    await recordVote(pollDoc, phoneHash, classification.matchedOption, classification.confidence, message);
-    console.log(
-      `voteWebhook: recorded vote pollId=${pollDoc.id} phoneHash=${phoneHash} choice=${classification.matchedOption} confidence=${classification.confidence}`
-    );
-    res.status(200).send("ok");
+    console.log(`voteWebhook: no match phoneHash=${phoneHash}`);
+    res.status(200).send("no match");
   }
 );
+
+interface SmsReceivedWebhookBody {
+  event: string;
+  payload: {
+    message: string;
+    sender: string;
+  };
+}
 
 function parseInboundSms(
   req: Request,
@@ -102,36 +154,43 @@ function parseInboundSms(
     return null;
   }
 
-  const params = req.body as Record<string, string>;
-  const signatureValid = verifyTwilioSignature(
-    VOTE_WEBHOOK_URL.value(),
-    params ?? {},
-    req.header("X-Twilio-Signature"),
-    TWILIO_AUTH_TOKEN.value()
-  );
+  const rawBody = req.rawBody?.toString("utf8") ?? "";
+  const timestampHeader = req.header("X-Timestamp");
+  const signatureValid = verifyWebhookSignature(rawBody, req.header("X-Signature"), timestampHeader, WEBHOOK_SIGNING_SECRET.value());
   if (!signatureValid) {
-    console.error("voteWebhook: rejected, invalid or missing Twilio signature");
+    const timestamp = Number(timestampHeader);
+    const ageSeconds = Number.isFinite(timestamp) ? Math.round(Date.now() / 1000 - timestamp) : "n/a";
+    console.error(
+      `voteWebhook: rejected, invalid or missing webhook signature (hasSignature=${!!req.header("X-Signature")} hasTimestamp=${!!timestampHeader} ageSeconds=${ageSeconds})`
+    );
     res.status(401).send("invalid signature");
     return null;
   }
 
-  const sender = params?.From;
-  const message = params?.Body ?? "";
+  let body: SmsReceivedWebhookBody;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    console.error("voteWebhook: rejected, malformed JSON body");
+    res.status(400).send("malformed body");
+    return null;
+  }
+
+  if (body.event !== "sms:received") {
+    console.log(`voteWebhook: ignored, event=${body.event}`);
+    res.status(200).send("ignored: not an sms:received event");
+    return null;
+  }
+
+  const sender = body.payload?.sender;
+  const message = body.payload?.message ?? "";
   if (!sender) {
-    console.error("voteWebhook: rejected, payload missing From");
+    console.error("voteWebhook: rejected, payload missing sender");
     res.status(400).send("missing sender");
     return null;
   }
 
   return { sender, message };
-}
-
-async function isActiveGroupMember(
-  db: FirebaseFirestore.Firestore,
-  phoneHash: string
-): Promise<boolean> {
-  const memberSnap = await db.collection(COLLECTIONS.groupMembers).doc(phoneHash).get();
-  return memberSnap.exists && memberSnap.data()?.active === true;
 }
 
 async function findOpenPoll(
@@ -156,7 +215,7 @@ async function recordVote(
   await pollDoc.ref.collection(COLLECTIONS.votes).doc(phoneHash).set({
     choice,
     confidence,
-    receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+    receivedAt: FieldValue.serverTimestamp(),
     rawBody,
   });
 }

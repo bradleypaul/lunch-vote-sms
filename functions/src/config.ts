@@ -1,29 +1,21 @@
-import { defineSecret, defineString } from "firebase-functions/params";
+import { defineSecret } from "firebase-functions/params";
 import * as crypto from "crypto";
 
 /**
- * Twilio account credentials (console.twilio.com), stored in Secret
- * Manager — never committed. TWILIO_AUTH_TOKEN also doubles as the key
- * used to verify inbound webhook signatures (see twilioSignature.ts).
+ * SMSGate device credentials (Basic Auth login/password from Cloud mode
+ * registration), stored in Secret Manager — never committed.
  */
-export const TWILIO_ACCOUNT_SID = defineSecret("TWILIO_ACCOUNT_SID");
-export const TWILIO_AUTH_TOKEN = defineSecret("TWILIO_AUTH_TOKEN");
+export const SMS_GATEWAY_LOGIN = defineSecret("SMS_GATEWAY_LOGIN");
+export const SMS_GATEWAY_PASSWORD = defineSecret("SMS_GATEWAY_PASSWORD");
 
 /**
- * The Twilio toll-free number texts are sent from, in E.164 format
- * (+1XXXXXXXXXX). Not a secret — it's the public sender identity everyone
- * in the group sees.
+ * HMAC-SHA256 signing key used to verify inbound webhook calls actually
+ * came from the SMSGate relay (X-Signature / X-Timestamp headers). Set to
+ * the same value as the "webhook signing key" configured on the device in
+ * the SMS Gateway app / cloud account settings. See README "Webhook
+ * verification".
  */
-export const TWILIO_FROM_NUMBER = defineString("TWILIO_FROM_NUMBER");
-
-/**
- * The exact public URL Twilio is configured to POST inbound messages to
- * (voteWebhook's deployed URL). Twilio's request-signature check is an
- * exact-string match against the URL it actually called, so this has to
- * match the webhook URL set in the Twilio console precisely — see README
- * "Webhook verification".
- */
-export const VOTE_WEBHOOK_URL = defineString("VOTE_WEBHOOK_URL");
+export const WEBHOOK_SIGNING_SECRET = defineSecret("WEBHOOK_SIGNING_SECRET");
 
 /**
  * Anthropic API key (console.claude.com) used for vote classification and
@@ -54,6 +46,8 @@ export const COLLECTIONS = {
   votes: "votes",
   groupMembers: "groupMembers",
   digest: "digest",
+  activityIdeas: "activityIdeas",
+  responses: "responses",
 } as const;
 
 export const POLL_STATUS = {
@@ -66,13 +60,38 @@ export const POLL_STATUS = {
 export const DIGEST_DOC_ID = "current";
 
 /**
- * Schedules for the two Cloud Scheduler-triggered functions. Cron syntax,
+ * `activityIdeas/{ideaId}.status` — `collecting` while host/outing prompts
+ * are still open, `digested` once generateIdeaDigest has summarized it. A
+ * response that arrives after that point is still recorded (see
+ * promptReplyHandler) but won't appear in a summary that's already gone
+ * out.
+ */
+export const IDEA_STATUS = {
+  collecting: "collecting",
+  digested: "digested",
+} as const;
+
+/**
+ * How long an activity idea collects host/outing responses before
+ * generateIdeaDigest summarizes it and texts you the tally.
+ */
+export const IDEA_DIGEST_WINDOW_HOURS = 24;
+
+/**
+ * Schedules for the Cloud Scheduler-triggered functions. Cron syntax,
  * evaluated in TIMEZONE. Edit these to match when the group's poll should
  * open and when the digest should go out for review.
  */
 export const TIMEZONE = "America/New_York";
 export const ANNOUNCEMENT_SCHEDULE = "0 9 * * 1"; // Monday 9:00am
 export const DIGEST_SCHEDULE = "0 17 * * 4"; // Thursday 5:00pm
+
+/**
+ * How often generateIdeaDigest checks for ideas that have crossed
+ * IDEA_DIGEST_WINDOW_HOURS. Hourly (rather than a weekly cadence like
+ * DIGEST_SCHEDULE) since activity ideas can come in on any day.
+ */
+export const IDEA_DIGEST_CHECK_SCHEDULE = "0 * * * *";
 
 /**
  * Strips a phone number down to digits only, so formatting differences

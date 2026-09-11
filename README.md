@@ -1,38 +1,42 @@
 # Lunch Vote SMS
 
 Runs a weekly lunch poll for a small group (10-25 people) entirely over SMS,
-from a dedicated Twilio toll-free number. Sending the weekly poll,
+sent from a dedicated phone via the [SMS Gateway for
+Android](https://sms-gate.app) app's cloud relay. Sending the weekly poll,
 classifying replies, and drafting a digest are automatic; only the final
 "text the group where we're going" step waits on a human (you) approving or
-overriding the digest.
+overriding the digest. Group members can also propose an ad-hoc activity
+("let's have a game night, who can host?" / "let's go to Emerald Tavern")
+any time, independent of the weekly poll — see **Activity ideas** below.
 
 ## What it does
 
 1. **Monday** — `sendAnnouncement` (Cloud Scheduler) texts every group
-   member the week's poll options individually, from the group's Twilio
-   number.
+   member the week's poll options individually, from the dedicated number.
 2. **All week** — group members text back a vote, a number, or loose
    sentiment ("something spicy"). `voteWebhook` receives each inbound text
-   from Twilio and hands it to `classifyVote`, which uses Haiku to match it
-   against the poll's options (grounded in each option's tags). A confident
-   match is recorded; anything else is left alone — no automated reply, no
-   logged "failure." It's just an ordinary text in your Messages app for you
-   to notice and answer personally if you want to.
+   via the SMS Gateway cloud relay and hands it to `classifyVote`, which
+   uses Haiku to match it against the poll's options (grounded in each
+   option's tags). A confident match is recorded; anything else is left
+   alone — no automated reply, no logged "failure." It's just an ordinary
+   text in your Messages app for you to notice and answer personally if you
+   want to.
 3. **Thursday** — `generateDigest` (Cloud Scheduler) reads the week's votes,
    has Haiku synthesize a tally + sentiment themes + a recommended pick, and
    texts that digest to **your own number**. The poll moves to
    `awaiting_approval`.
-4. **You reply** — texting the group's Twilio number back from your own
-   phone routes to `approvalHandler` instead of vote classification. Reply
-   `approve` to confirm the digest's recommendation, or `override <option>`
-   to pick something else. Either way, `sendFinalAnnouncement` texts the
-   group the confirmed where (and when, if set) and the poll moves to
-   `sent`.
+4. **You reply** — texting back (from your own number) routes to
+   `approvalHandler` instead of vote classification. Reply `approve` to
+   confirm the digest's recommendation, or `override <option>` to pick
+   something else — either exact keywords or free-form phrasing (Haiku
+   fills in for anything the exact match doesn't recognize). Either way,
+   `sendFinalAnnouncement` texts the group the confirmed where (and when, if
+   set) and the poll moves to `sent`.
 
-Using a dedicated Twilio number (rather than a personal phone) is
-deliberate: every text the group gets clearly comes from an automated
-system, not from you personally — nothing here should read as you texting
-someone under your own name when it isn't.
+Sending from a phone dedicated to this project (rather than your daily
+driver) keeps the automation's texts separate from your own — see **Manual
+setup** for getting a second number onto a device without needing a
+business-messaging account (Twilio, etc.) at all.
 
 ## Architecture
 
@@ -48,7 +52,7 @@ someone under your own name when it isn't.
   group member replies                   texted to your own number
         |                                          |
         v                                          v
-   voteWebhook  <---------- Twilio ---------->  voteWebhook
+   voteWebhook  <----- SMS Gateway relay -----> voteWebhook
    (inbound SMS webhook)               (your reply, from your own number)
         |                                          |
    sender == your number? ----- no ---- classifyVote (Haiku) --> confident?
@@ -70,20 +74,29 @@ someone under your own name when it isn't.
 ```text
 /functions
   /src
-    index.ts                 function exports + admin.initializeApp()
-    config.ts                secrets, collection names, phone hashing, schedules
-    voteParsing.ts             pure text-parsing logic (vote text match, approval replies)
-    twilioSignature.ts         HMAC-SHA1 verification for inbound Twilio webhooks
-    voteWebhook.ts             HTTPS function: branches inbound SMS to classifyVote/approvalHandler
-    classifyVote.ts             Haiku tool-use call: free text -> {matched_option, confidence}
-    generateDigest.ts           scheduled: tally + Haiku summary -> digest doc + SMS to owner
-    approvalHandler.ts          parses owner's approve/override reply
-    sendAnnouncement.ts         scheduled: texts the week's poll to the group
-    sendFinalAnnouncement.ts    texts the confirmed pick to the group
-    smsClient.ts                 Twilio Messages API wrapper (send message)
+    index.ts                    function exports + admin.initializeApp()
+    config.ts                   secrets, collection names, phone hashing, schedules
+    voteParsing.ts               pure text-parsing logic (vote/approval/prompt replies)
+    webhookSignature.ts          HMAC-SHA256 verification for inbound SMS Gateway webhooks
+    voteWebhook.ts               HTTPS function: routes inbound SMS to approval/vote/idea handling
+    classifyVote.ts               Haiku tool-use call: free text -> {matched_option, confidence}
+    classifyApprovalReply.ts      Haiku fallback for free-form approve/override replies
+    classifyActivityIdea.ts       Haiku tool-use call: free text -> {isIdea, kind, activity}
+    classifyPromptReply.ts        Haiku fallback for free-form yes/no/maybe prompt replies
+    safeClassify.ts               wraps a classifyX call, falls back instead of throwing
+    generateDigest.ts             scheduled: tally + Haiku summary -> digest doc + SMS to owner
+    generateIdeaDigest.ts         scheduled: tallies host/outing responses -> SMS to owner
+    approvalHandler.ts            parses owner's approve/override reply
+    inviteHandler.ts               parses owner's "invite <phone>" command, texts the invitee
+    signupHandler.ts                resolves an invitee's yes/no reply to a pending invite
+    activityIdeaHandler.ts        creates an activity idea, prompts the relevant members
+    promptReplyHandler.ts         resolves a member's reply to a pending host/outing prompt
+    sendAnnouncement.ts           scheduled: texts the week's poll to the group
+    sendFinalAnnouncement.ts      texts the confirmed pick to the group
+    gatewayClient.ts               SMS Gateway (sms-gate.app) Messages API wrapper (send message)
   /test
     voteParsing.test.ts
-    twilioSignature.test.ts
+    webhookSignature.test.ts
   firestore.rules
 firestore.indexes.json
 firebase.json
@@ -96,7 +109,16 @@ firebase.json
 - `polls/{pollId}/votes/{phoneHash}` — `{ choice, confidence, receivedAt, rawBody }`
   (upsert on phone hash, so a repeat text overwrites rather than duplicates)
 - `polls/{pollId}/digest/current` — `{ tally, totalVotes, themes, recommendedOption, recommendedReason, sentAt, approvalStatus }`
-- `groupMembers/{phoneHash}` — `{ name, phoneNumber, active }`
+- `groupMembers/{phoneHash}` — `{ name, phoneNumber, active, canHost?, pendingPrompt? }`
+  (`active: false` means invited but not yet confirmed — see **Signup** below;
+  `canHost`: eligible to be asked "want to host?" for a `host_needed` idea;
+  `pendingPrompt`: `{ ideaId }` while awaiting that member's yes/no/maybe —
+  set when they're asked, cleared on their next reply regardless of whether
+  it parsed)
+- `activityIdeas/{ideaId}` — `{ kind, activity, proposerPhoneHash, createdAt, status }`
+  (`kind`: `host_needed` | `outing`; `status`: `collecting` → `digested`)
+- `activityIdeas/{ideaId}/responses/{phoneHash}` — `{ response, receivedAt }`
+  (`response`: `yes` | `no` | `maybe`)
 
 `optionTags` is what lets loose sentiment ("something spicy") resolve to an
 actual option instead of the model guessing blind — e.g.
@@ -118,20 +140,68 @@ is stored in Secret Manager rather than Firestore for the same reason.
 Firestore access is Admin-SDK-only — see `firestore.rules`, which denies all
 direct client reads/writes.
 
+## Signup
+
+Adding a group member doesn't require touching Firestore directly. Text
+the bot number **from your own (owner's) number**:
+
+```text
+invite Jane 5125551234
+```
+
+(the phone number must be the last word; the name is optional — `invite
+5125551234` works too). `inviteHandler` creates a `groupMembers` doc with
+`active: false` and texts that number an explanation of what this is,
+asking them to reply **YES** to join. Their next reply is read by
+`signupHandler` as a yes/no answer (same fast-keyword-then-Haiku-fallback
+approach as everywhere else): **yes** sets `active: true`; **no** deletes
+the invite so a later re-`invite` starts clean; anything else (a "maybe,"
+or nothing recognizable) just leaves the invite pending — they can reply
+again whenever.
+
+## Activity ideas
+
+Independent of the weekly lunch poll, any group member can propose an
+ad-hoc activity at any time, in plain text — no command syntax needed.
+`voteWebhook` tries this as a fallback whenever a message isn't a pending
+prompt reply and isn't a confident vote (or there's no open poll at all):
+`classifyActivityIdea` (Haiku) decides whether it's actually a proposal and,
+if so, which of two kinds:
+
+- **`host_needed`** — needs someone to organize it (e.g. "let's have a game
+  night, who can host?"). Only members with `canHost: true` are asked.
+- **`outing`** — a specific place or event to go to (e.g. "let's go to
+  Emerald Tavern" or "let's go to the Red Poppy Festival"). Every other
+  active member is asked.
+
+`activityIdeaHandler` creates the `activityIdeas` doc and texts each
+targeted member "want to host?" / "want to go?", setting a `pendingPrompt`
+on their `groupMembers` doc so their next reply is read as answering that
+question (via `promptReplyHandler`) rather than as a vote or a new idea.
+`generateIdeaDigest` runs hourly, and once an idea has been collecting
+responses for `IDEA_DIGEST_WINDOW_HOURS` (default 24), texts you a
+yes/maybe/no tally and marks it `digested`.
+
+Same proposer-anonymity treatment as votes: the ask that goes out to
+targeted members never names who proposed it, and the idea doc stores only
+`proposerPhoneHash`, not a name or number.
+
 ## Webhook verification
 
-Twilio signs every webhook request with an `X-Twilio-Signature` header:
-`base64(HMAC-SHA1(authToken, url + sorted-and-concatenated POST param
-key+value pairs))`, per
-[Twilio's documented request-validation algorithm](https://www.twilio.com/docs/usage/webhooks/webhooks-security).
-`voteWebhook` verifies this (constant-time comparison) before touching
-Firestore, using your account's Auth Token (`TWILIO_AUTH_TOKEN`).
+SMS Gateway signs every webhook delivery with `X-Signature` and
+`X-Timestamp` headers: `X-Signature` is
+`hex(HMAC-SHA256(webhookSigningSecret, rawBody + X-Timestamp))` (the raw
+JSON body string concatenated directly with the timestamp string, no
+separator), where `X-Timestamp` is a Unix-seconds timestamp. `voteWebhook`
+recomputes this (constant-time comparison) and rejects anything more than 5
+minutes stale, before touching Firestore — see `webhookSignature.ts`.
 
-This is sensitive to getting the URL exactly right — `VOTE_WEBHOOK_URL` (a
-plain, non-secret config param) must match, character for character, the
-webhook URL configured on the Twilio number. If verification starts failing
-in production after everything was working, mismatch between these two is
-the first thing to check (e.g. a trailing slash, or `http` vs `https`).
+The signing secret is set once, on the device, in the SMS Gateway app's
+webhook settings (or its cloud account dashboard), and must match
+`WEBHOOK_SIGNING_SECRET` in Secret Manager exactly. Unlike Twilio-style
+URL-signing, this scheme doesn't care what URL the webhook is posted to, so
+there's no separate "the deployed URL must match a config param" failure
+mode to worry about here.
 
 ## Local development
 
@@ -141,42 +211,65 @@ project (see **Manual setup**, below).
 ```bash
 cd functions
 npm install
-npm test              # vote-parsing + Twilio-signature unit tests
+npm test              # vote-parsing + webhook-signature unit tests
 npm run build          # type-check + compile to lib/
 ```
 
-To run against the Functions + Firestore emulators:
+To run against the Functions + Firestore emulators, you'll also need a JVM
+(the Firestore emulator is Java-based) and, on this project specifically,
+**Node 20** — not whatever's newest on your machine. The emulator's runtime
+sandbox has been observed to silently break `admin.firestore.FieldValue`
+(and other namespaced Firestore statics) under Node 24, with no error at
+the call site that mentions Node at all — it just throws `Cannot read
+properties of undefined`. The code already sidesteps this by importing
+from the modular `firebase-admin/firestore` entry point instead of the old
+`admin.firestore.*` namespace, which is also just the current recommended
+pattern — but if you ever see that exact error locally, mismatched Node
+versions are the first thing to check, not a Firestore bug:
 
 ```bash
-firebase use --add     # first time only, picks the GCP project
+nvm install 20 && nvm use 20     # if not already on 20
+firebase use --add               # first time only, picks the GCP project
 firebase emulators:start --only functions,firestore
 ```
 
-The emulator prints local URLs for `voteWebhook`, `sendAnnouncement`, and
-`generateDigest` (the latter two are scheduled, not HTTP-triggered — invoke
-them manually from the emulator UI's "Trigger now" button while testing).
+Secrets (`SMS_GATEWAY_LOGIN`, `SMS_GATEWAY_PASSWORD`, `WEBHOOK_SIGNING_SECRET`,
+`ANTHROPIC_API_KEY`, `MY_PHONE_NUMBER`) aren't pulled from Secret Manager for
+the emulator — put real values in a gitignored `functions/.secret.local`
+file (dotenv format, one `KEY=value` per line) and the emulator picks them
+up automatically.
+
+The emulator prints local URLs for `voteWebhook`, `sendAnnouncement`,
+`generateDigest`, and `generateIdeaDigest` (the latter three are scheduled,
+not HTTP-triggered — invoke them manually from the emulator UI's "Trigger
+now" button while testing, or note that Cloud Scheduler jobs *do* run
+against the deployed versions once live, no manual trigger needed there).
 You can drive `voteWebhook` directly with `curl` to simulate an inbound text
-without Twilio — you'll need to compute a matching signature over the exact
-URL and form-encoded params:
+without SMS Gateway — you'll need to compute a matching HMAC-SHA256
+signature over the raw JSON body and a timestamp:
 
 ```bash
 URL="http://127.0.0.1:5001/<project-id>/us-central1/voteWebhook"
-SECRET=your-local-auth-token
-# Twilio's algorithm: url + sorted "key"+"value" pairs, HMAC-SHA1, base64
-SIG=$(printf '%sBody2FromSample+15555550123' "$URL" | openssl dgst -sha1 -hmac "$SECRET" -binary | base64)
+SECRET=your-local-webhook-signing-secret
+BODY='{"event":"sms:received","payload":{"sender":"+15555550123","message":"2"}}'
+TIMESTAMP=$(date +%s)
+SIG=$(printf '%s%s' "$BODY" "$TIMESTAMP" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 
 curl -X POST "$URL" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -H "X-Twilio-Signature: $SIG" \
-  --data-urlencode "From=+15555550123" \
-  --data-urlencode "Body=2"
+  -H "Content-Type: application/json" \
+  -H "X-Signature: $SIG" \
+  -H "X-Timestamp: $TIMESTAMP" \
+  --data-raw "$BODY"
 ```
 
 (You'll also need a matching `groupMembers` doc and an open `polls` doc
-seeded in the Firestore emulator first — use the emulator UI or `firebase
-firestore:` commands. `classifyVote` calls the real Anthropic API even
-against the emulator, so `ANTHROPIC_API_KEY` needs to be a real key locally
-too — export it as a plain env var for the emulator.)
+seeded in the Firestore emulator first — the Admin SDK, pointed at the
+emulator via `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080`, bypasses
+`firestore.rules`' deny-all the same way it does in production; a raw
+REST call to the emulator's Firestore API would get rejected by those same
+rules. `classifyVote`/`classifyActivityIdea`/etc. call the real Anthropic
+API even against the emulator, so `ANTHROPIC_API_KEY` in `.secret.local`
+needs to be a real, funded key.)
 
 ## Manual setup (not automatable from this repo)
 
@@ -189,44 +282,55 @@ too — export it as a plain env var for the emulator.)
    gcloud auth login
    gcloud config set project <PROJECT_ID>
    ```
-4. Create a [Twilio](https://console.twilio.com) account. Buy a **toll-free
-   number** (not a standard local number, which requires 10DLC business
-   registration for automated texting; not a true short code, which costs
-   $500-1000+/month and a multi-week carrier application). Complete Twilio's
-   toll-free verification for your use case (a personal group's weekly lunch
-   poll — this is a quick form, not the 10DLC campaign process).
-5. From the Twilio console, note your **Account SID** and **Auth Token**.
-6. Get an Anthropic API key from console.claude.com.
-7. Store all secrets (never commit them):
+4. Get a phone number dedicated to this project, separate from your own —
+   either a second SIM in a spare/dedicated Android phone, or a second
+   line/eSIM on a dual-SIM phone you already carry. Any prepaid plan with
+   texting works; this doesn't need a business-messaging account (Twilio,
+   etc.) at all, and no carrier verification process. If the phone runs
+   Google Messages, check **Settings → RCS chats** and turn RCS *off* for
+   this line specifically — RCS is a separate protocol from SMS, and SMS
+   Gateway's inbound detection needs traditional SMS delivery to see
+   replies at all.
+5. Install [SMS Gateway for Android](https://sms-gate.app) on that phone
+   and register a **Cloud mode** account (relays through SMS Gateway's
+   cloud service, so the phone doesn't need to expose a public endpoint
+   itself). Note the device's Cloud-mode **login and password**.
+6. Set a **webhook signing secret** (any strong random string you
+   generate) in the app's webhook settings, and register a webhook for the
+   `sms:received` event pointing at your `voteWebhook` function's URL. If
+   the app's UI doesn't expose webhook registration directly, it's a
+   one-line API call once you have the login/password:
    ```bash
-   firebase functions:secrets:set TWILIO_ACCOUNT_SID
-   firebase functions:secrets:set TWILIO_AUTH_TOKEN
+   curl -u "<login>:<password>" -X POST \
+     -H "Content-Type: application/json" \
+     https://api.sms-gate.app/3rdparty/v1/webhooks \
+     -d '{"url":"<your voteWebhook URL>","event":"sms:received"}'
+   ```
+   You'll only have the real deployed URL after the first deploy — deploy
+   once with any placeholder, note the printed `voteWebhook` URL, then run
+   this. No redeploy needed since the URL isn't stored in this repo's
+   config (unlike Twilio-style signing, SMS Gateway's HMAC doesn't care
+   what URL it's posted to).
+7. Get an Anthropic API key from console.claude.com.
+8. Store all secrets (never commit them):
+   ```bash
+   firebase functions:secrets:set SMS_GATEWAY_LOGIN
+   firebase functions:secrets:set SMS_GATEWAY_PASSWORD
+   firebase functions:secrets:set WEBHOOK_SIGNING_SECRET    # same value set in the app
    firebase functions:secrets:set ANTHROPIC_API_KEY
-   firebase functions:secrets:set MY_PHONE_NUMBER          # your own number, any format
+   firebase functions:secrets:set MY_PHONE_NUMBER           # your own number, any format
    ```
-8. Set the two non-secret config params (used by `smsClient.ts` and the
-   webhook signature check). `firebase-functions/params` reads these as
-   plain environment values at deploy time from a `functions/.env.<project-id>`
-   file (e.g. `functions/.env.lunch-vote-sms`), which is gitignored —
-   create it with:
-   ```text
-   TWILIO_FROM_NUMBER=+18885551234
-   VOTE_WEBHOOK_URL=https://us-central1-<project-id>.cloudfunctions.net/voteWebhook
-   ```
-   `VOTE_WEBHOOK_URL` needs the real deployed URL, so you'll only have the
-   final value after the first deploy — deploy once, note the printed
-   `voteWebhook` URL, add it to the `.env` file, redeploy.
-9. Decide the group's phone-number allowlist and each poll option's
-   descriptive tags. Seed `groupMembers` docs and each week's `polls` doc
-   accordingly — this is Firestore config, not a hardcoded list, so it's
-   editable without a redeploy. Set `eventDetails` on the poll doc if you
-   want a time/place note folded into the final announcement.
-10. In the Twilio console, set the phone number's **"A message comes
-    in"** webhook to the deployed `voteWebhook` URL (HTTP POST).
-11. Adjust `TIMEZONE`, `ANNOUNCEMENT_SCHEDULE`, and `DIGEST_SCHEDULE` in
-    `config.ts` to match when you actually want the poll sent and the digest
-    generated — the defaults (Monday 9am / Thursday 5pm, America/New_York)
-    are placeholders.
+9. Decide the group's phone-number allowlist, each poll option's
+   descriptive tags, and (if using activity ideas) who's `canHost: true`.
+   Seed `groupMembers` docs and each week's `polls` doc accordingly — this
+   is Firestore config, not a hardcoded list, so it's editable without a
+   redeploy. Set `eventDetails` on the poll doc if you want a time/place
+   note folded into the final announcement.
+10. Adjust `TIMEZONE`, `ANNOUNCEMENT_SCHEDULE`, `DIGEST_SCHEDULE`, and
+    `IDEA_DIGEST_WINDOW_HOURS`/`IDEA_DIGEST_CHECK_SCHEDULE` in `config.ts`
+    to match your actual cadence — the defaults (Monday 9am / Thursday
+    5pm, America/New_York, 24h idea window checked hourly) are
+    placeholders.
 
 ## Deploying
 
@@ -235,9 +339,9 @@ cd functions && npm run build
 firebase deploy --only functions
 ```
 
-`sendAnnouncement` and `generateDigest` are `onSchedule` functions — Firebase
-provisions their Cloud Scheduler jobs automatically on deploy, no separate
-`gcloud scheduler` setup needed.
+`sendAnnouncement`, `generateDigest`, and `generateIdeaDigest` are
+`onSchedule` functions — Firebase provisions their Cloud Scheduler jobs
+automatically on deploy, no separate `gcloud scheduler` setup needed.
 
 ## Known limitations
 
@@ -249,13 +353,15 @@ provisions their Cloud Scheduler jobs automatically on deploy, no separate
   opensAt/closesAt, eventDetails) is seeded manually in Firestore before
   `sendAnnouncement` fires — this repo only sends and tallies, it doesn't
   author the poll.
-- **classifyVote and generateDigest cost real API calls.** Both hit the
-  Anthropic API live, including against the local emulator — see **Cost
-  notes** for expected volume/cost, but there's no offline/mock mode built
-  in.
-- **`VOTE_WEBHOOK_URL` must exactly match the Twilio console's configured
-  webhook URL**, or signature verification fails on every request — see
-  "Webhook verification" above.
+- **The Haiku-calling functions cost real API calls.** `classifyVote`,
+  `classifyApprovalReply`, `classifyActivityIdea`, `classifyPromptReply`,
+  and `generateDigest`'s summary step all hit the Anthropic API live,
+  including against the local emulator — see **Cost notes** for expected
+  volume/cost, but there's no offline/mock mode built in.
+- **Depends on one phone staying online.** Delivery and inbound replies
+  both route through the SMS Gateway app on a single device — if it's
+  off, out of battery, or disconnected, texts queue up (or are missed
+  entirely) until it's back.
 
 ## Stretch goals (not implemented)
 
@@ -269,13 +375,15 @@ Cloud Scheduler usage stays comfortably inside GCP's always-free tier (50k
 reads/day, 20k writes/day, 2M function invocations/month, 3 free scheduler
 jobs).
 
-Twilio is the one part of this that isn't free: a toll-free number runs
-around $2/month, plus roughly $0.0079 per SMS segment sent/received in the
-US. At 10-25 people texting a few times a week, that's still a few dollars a
-month, not a free-tier system — the tradeoff for texts that clearly read as
-coming from an automated number rather than your own.
+Sending SMS itself is free here — it rides on the dedicated phone's
+existing prepaid plan and SMS Gateway's free Cloud-mode tier, rather than
+paying a business-messaging provider's per-segment rates. The real cost is
+the phone and its plan (a cheap prepaid line, one-time or ~$15-35/mo
+depending on carrier — see the phone/carrier discussion in this project's
+history for specifics) plus keeping it powered on and connected.
 
 Haiku 4.5 (`claude-haiku-4-5-20251001`) is $1/$5 per million input/output
-tokens. Each `classifyVote` call is a few hundred tokens; the weekly
-`generateDigest` call reading a week's worth of votes is maybe 1-2k input
-tokens. All-in, this piece is still pennies a month.
+tokens. Each `classifyVote`/`classifyActivityIdea`/`classifyPromptReply`
+call is a few hundred tokens; the weekly `generateDigest` call reading a
+week's worth of votes is maybe 1-2k input tokens. All-in, this piece is
+still pennies a month.

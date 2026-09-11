@@ -8,5 +8,6 @@ ui-debug.log
 *.log
 .env
 .env.*
+.secret.local
 .DS_Store
 .firebaserc

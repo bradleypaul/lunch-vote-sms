@@ -1,6 +1,7 @@
 import { CLASSIFY_CONFIDENCE_THRESHOLD, COLLECTIONS, DIGEST_DOC_ID, POLL_STATUS } from "./config";
 import { parseApprovalReply } from "./voteParsing";
 import { classifyApprovalReply } from "./classifyApprovalReply";
+import { safeClassify } from "./safeClassify";
 import { sendFinalAnnouncement } from "./sendFinalAnnouncement";
 
 interface PollDoc {
@@ -38,7 +39,9 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
 
   const reply =
     parseApprovalReply(message, options) ??
-    (await classifyApprovalReply(message, options, CLASSIFY_CONFIDENCE_THRESHOLD));
+    (await safeClassify(`approvalHandler pollId=${pollDoc.id}`, null, () =>
+      classifyApprovalReply(message, options, CLASSIFY_CONFIDENCE_THRESHOLD)
+    ));
   if (!reply) {
     console.log(`approvalHandler: unparseable reply pollId=${pollDoc.id}`);
     return;

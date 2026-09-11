@@ -1,5 +1,5 @@
 import { COLLECTIONS, POLL_STATUS } from "./config";
-import { sendMessage } from "./smsClient";
+import { sendMessage } from "./gatewayClient";
 
 interface PollDoc {
   eventDetails?: string;
