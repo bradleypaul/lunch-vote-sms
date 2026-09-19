@@ -198,3 +198,28 @@ export function parseCanHostCommand(rawBody: string): CanHostCommand | null {
   }
   return { who, canHost: match[2].toLowerCase() === "yes" };
 }
+
+export interface PollCommand {
+  options: string[];
+}
+
+/**
+ * Parses the owner's "poll <option>, <option>, <option>" command —
+ * comma-separated, at least two options (a one-option poll isn't a vote).
+ * Each option is trimmed as typed; matching against votes elsewhere in the
+ * codebase already goes through normalizeText, so casing/punctuation here
+ * doesn't need to be perfect.
+ */
+export function parsePollCommand(rawBody: string): PollCommand | null {
+  const match = rawBody.trim().match(/^poll\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const options = match[1]
+    .split(",")
+    .map((option) => option.trim())
+    .filter((option) => option.length > 0);
+
+  return options.length >= 2 ? { options } : null;
+}

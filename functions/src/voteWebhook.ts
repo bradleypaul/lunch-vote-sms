@@ -7,7 +7,6 @@ import {
   COLLECTIONS,
   FIRESTORE_REGION,
   MY_PHONE_NUMBER,
-  POLL_STATUS,
   SMS_GATEWAY_LOGIN,
   SMS_GATEWAY_PASSWORD,
   WEBHOOK_SIGNING_SECRET,
@@ -24,20 +23,28 @@ import { handleInviteCommand } from "./inviteHandler";
 import { handleSignupReply } from "./signupHandler";
 import { handleMembersCommand, handleRemoveCommand, handleCanHostCommand } from "./memberManagementHandler";
 import { handleOwnerHelpCommand, handleMemberHelpCommand } from "./helpHandler";
+import { handlePollCommand } from "./pollCommandHandler";
+import { handleOwnerNaturalLanguageFallback } from "./ownerCommandHandler";
 import { safeClassify } from "./safeClassify";
+import { findOpenPoll } from "./pollUtils";
 
 type OwnerCommandHandler = (db: FirebaseFirestore.Firestore, message: string) => Promise<boolean>;
 
 // Tried in order against any text from the owner's own number; the first
-// one that recognizes the message handles it. Anything none of them
-// recognize falls through to handleApproval (see below), since that's
-// still the owner's most common kind of reply (approve/override a digest).
+// one that recognizes the message handles it. Each of these is a free,
+// instant exact-syntax match (including handleApproval's own internal
+// fast path); anything none of them recognize — including looser phrasing
+// none of their Haiku fallbacks caught either — falls through to
+// handleOwnerNaturalLanguageFallback, one last Haiku call covering every
+// other admin intent (see ownerCommandHandler.ts).
 const OWNER_COMMAND_HANDLERS: OwnerCommandHandler[] = [
   handleOwnerHelpCommand,
   handleInviteCommand,
+  handlePollCommand,
   handleMembersCommand,
   handleRemoveCommand,
   handleCanHostCommand,
+  handleApproval,
 ];
 
 interface PollDoc {
@@ -59,12 +66,15 @@ interface HttpResponse {
  * HTTPS endpoint SMS Gateway's cloud relay calls (as the `sms:received`
  * webhook) whenever a text arrives on the phone. Verifies the request,
  * then branches on sender: the owner's texts are tried against each admin
- * command in turn (help, invite, members, remove, canhost), falling back
- * to an approval reply if none match; a pending (invited but not yet
- * active) member's texts are read as a yes/no signup answer; and an active
- * member's texts try each interpretation in order — "help", an answer to a
- * pending host/outing prompt, a vote against an open poll, or a new
- * activity-idea proposal.
+ * command's exact syntax in turn (help, invite, poll, members, remove,
+ * canhost, approve/override), and anything none of those recognize — free
+ * phrasing like "can you add Jane, her number's 512-555-1234" — falls
+ * through to one Haiku call that figures out the intent instead (see
+ * ownerCommandHandler.ts); a pending (invited but not yet active) member's
+ * texts are read as a yes/no signup answer; and an active member's texts
+ * try each interpretation in order — "help", an answer to a pending
+ * host/outing prompt, a vote against an open poll, or a new activity-idea
+ * proposal.
  *
  * Every rejection/no-match path (bad signature, unknown sender,
  * low-confidence classification) returns 2xx/4xx with a distinct,
@@ -97,7 +107,7 @@ export const voteWebhook = onRequest(
         }
       }
       if (!handled) {
-        await handleApproval(db, message);
+        await handleOwnerNaturalLanguageFallback(db, message);
       }
       res.status(200).send("ok");
       return;
@@ -219,18 +229,6 @@ function parseInboundSms(
   }
 
   return { sender, message };
-}
-
-async function findOpenPoll(
-  db: FirebaseFirestore.Firestore
-): Promise<FirebaseFirestore.QueryDocumentSnapshot | null> {
-  const snap = await db
-    .collection(COLLECTIONS.polls)
-    .where("status", "==", POLL_STATUS.open)
-    .orderBy("opensAt", "desc")
-    .limit(1)
-    .get();
-  return snap.empty ? null : snap.docs[0];
 }
 
 async function recordVote(

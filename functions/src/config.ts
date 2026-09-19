@@ -84,7 +84,9 @@ export const IDEA_DIGEST_WINDOW_HOURS = 24;
  */
 export const TIMEZONE = "America/New_York";
 export const ANNOUNCEMENT_SCHEDULE = "0 9 * * 1"; // Monday 9:00am
+export const VOTE_REMINDER_SCHEDULE = "0 17 * * 3"; // Wednesday 5:00pm
 export const DIGEST_SCHEDULE = "0 17 * * 4"; // Thursday 5:00pm
+export const APPROVAL_REMINDER_SCHEDULE = "0 17 * * 5"; // Friday 5:00pm
 
 /**
  * How often generateIdeaDigest checks for ideas that have crossed
@@ -92,6 +94,14 @@ export const DIGEST_SCHEDULE = "0 17 * * 4"; // Thursday 5:00pm
  * DIGEST_SCHEDULE) since activity ideas can come in on any day.
  */
 export const IDEA_DIGEST_CHECK_SCHEDULE = "0 * * * *";
+
+/**
+ * How many of the most recent `sent` polls' confirmed picks generateDigest
+ * tells Haiku to avoid repeating (see "avoid repeat picks" in the digest
+ * prompt) — a nudge, not a hard filter, since a repeat with a strong
+ * majority is still probably right.
+ */
+export const AVOID_REPEAT_WEEKS = 2;
 
 /**
  * Strips a phone number down to digits only, so formatting differences

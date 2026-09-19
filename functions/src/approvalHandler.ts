@@ -20,8 +20,13 @@ interface DigestDoc {
  * ("yeah let's do chipotle") falls back to a Haiku classification. Anything
  * neither one can place with confidence is left alone — same as any other
  * text — so the owner can just reply again with something clearer.
+ *
+ * Returns whether it actually acted, so the caller (voteWebhook's owner
+ * command chain) knows whether to keep trying other interpretations —
+ * "no poll awaiting approval" and "couldn't parse a reply" both count as
+ * not having acted.
  */
-export async function handleApproval(db: FirebaseFirestore.Firestore, message: string): Promise<void> {
+export async function handleApproval(db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
   const pendingSnap = await db
     .collection(COLLECTIONS.polls)
     .where("status", "==", POLL_STATUS.awaitingApproval)
@@ -30,7 +35,7 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
 
   if (pendingSnap.empty) {
     console.log("approvalHandler: no poll awaiting approval, ignoring");
-    return;
+    return false;
   }
 
   const pollDoc = pendingSnap.docs[0];
@@ -44,7 +49,7 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
     ));
   if (!reply) {
     console.log(`approvalHandler: unparseable reply pollId=${pollDoc.id}`);
-    return;
+    return false;
   }
 
   let confirmedOption: string | null;
@@ -54,7 +59,7 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
     confirmedOption = digest?.recommendedOption ?? null;
     if (!confirmedOption) {
       console.log(`approvalHandler: approve with no recommendedOption on digest pollId=${pollDoc.id}, ignoring`);
-      return;
+      return false;
     }
   } else {
     confirmedOption = reply.option;
@@ -67,4 +72,5 @@ export async function handleApproval(db: FirebaseFirestore.Firestore, message: s
   console.log(`approvalHandler: approved pollId=${pollDoc.id} option=${confirmedOption} action=${reply.action}`);
 
   await sendFinalAnnouncement(db, pollDoc.id, confirmedOption);
+  return true;
 }

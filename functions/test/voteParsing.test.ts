@@ -6,6 +6,7 @@ import {
   parseApprovalReply,
   parseCanHostCommand,
   parseInviteCommand,
+  parsePollCommand,
   parsePromptReply,
   parseRemoveCommand,
   parseVote,
@@ -245,5 +246,36 @@ describe("parseCanHostCommand", () => {
   it("returns null without a trailing yes/no", () => {
     expect(parseCanHostCommand("canhost Jane")).toBeNull();
     expect(parseCanHostCommand("canhost Jane maybe")).toBeNull();
+  });
+});
+
+describe("parsePollCommand", () => {
+  it("parses comma-separated options", () => {
+    expect(parsePollCommand("poll Chipotle, Panera, Chili's")).toEqual({
+      options: ["Chipotle", "Panera", "Chili's"],
+    });
+  });
+
+  it("trims whitespace around each option", () => {
+    expect(parsePollCommand("poll  Chipotle ,Panera  ,  Chili's ")).toEqual({
+      options: ["Chipotle", "Panera", "Chili's"],
+    });
+  });
+
+  it("is case-insensitive on the command keyword", () => {
+    expect(parsePollCommand("Poll Chipotle, Panera")).toEqual({ options: ["Chipotle", "Panera"] });
+  });
+
+  it("returns null with fewer than two options", () => {
+    expect(parsePollCommand("poll Chipotle")).toBeNull();
+    expect(parsePollCommand("poll")).toBeNull();
+  });
+
+  it("ignores empty entries from stray commas", () => {
+    expect(parsePollCommand("poll Chipotle,, Panera,")).toEqual({ options: ["Chipotle", "Panera"] });
+  });
+
+  it("returns null when the message doesn't start with poll", () => {
+    expect(parsePollCommand("Chipotle, Panera")).toBeNull();
   });
 });

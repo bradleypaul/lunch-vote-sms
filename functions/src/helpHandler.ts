@@ -2,8 +2,9 @@ import { MY_PHONE_NUMBER } from "./config";
 import { isHelpCommand } from "./voteParsing";
 import { sendMessage } from "./gatewayClient";
 
-const OWNER_HELP_TEXT = `Admin commands:
+const OWNER_HELP_TEXT = `Admin commands (or just describe what you want in plain English — I'll figure it out):
 - invite <name>? <phone> — invite someone to the group
+- poll <option>, <option>, ... — start a new poll
 - approve — confirm the digest's recommended pick
 - override <option> — pick a different option than recommended
 - members — list all group members and their status
@@ -17,22 +18,25 @@ const MEMBER_HELP_TEXT = `You're in the lunch poll group! Here's what you can do
 - If asked "want to host?" or "want to go?", just reply yes, no, or maybe
 - Text "help" any time to see this again`;
 
-/**
- * Handles a "help" text from the owner: texts back the admin command
- * list. Returns whether the message was recognized as this command at
- * all, so the caller knows not to also try it as an invite/approval reply.
- */
-export async function handleOwnerHelpCommand(_db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
-  if (!isHelpCommand(message)) {
-    return false;
-  }
-
+/** Texts the owner the admin command list. */
+export async function sendOwnerHelpText(): Promise<void> {
   try {
     await sendMessage(MY_PHONE_NUMBER.value(), OWNER_HELP_TEXT);
   } catch (err) {
     console.error("helpHandler: owner help send failed", err);
   }
+}
 
+/**
+ * Fast path: handles a "help" text from the owner, free and instant.
+ * Returns whether the message matched, so voteWebhook's owner command
+ * chain knows whether to keep trying other interpretations.
+ */
+export async function handleOwnerHelpCommand(_db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
+  if (!isHelpCommand(message)) {
+    return false;
+  }
+  await sendOwnerHelpText();
   return true;
 }
 

@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   ANTHROPIC_API_KEY,
+  AVOID_REPEAT_WEEKS,
   COLLECTIONS,
   DIGEST_DOC_ID,
   DIGEST_SCHEDULE,
@@ -48,7 +49,10 @@ const DIGEST_TOOL: Anthropic.Tool = {
       recommended_option: {
         type: "string",
         description:
-          "The poll option this digest recommends, exact text matching one of the given options. Usually the top raw vote count, but pick a different one if the sentiment clearly diverges from the count (say why).",
+          "The poll option this digest recommends, exact text matching one of the given options. Usually the " +
+          "top raw vote count, but pick a different one if the sentiment clearly diverges from the count, or " +
+          "if the top pick was called out as recently picked and a reasonably close second option wasn't " +
+          "(say why either way).",
       },
       recommended_reason: {
         type: "string",
@@ -103,10 +107,12 @@ export const generateDigest = onSchedule(
     }
     const totalVotes = votes.length;
 
+    const recentPicks = await getRecentPicks(db, AVOID_REPEAT_WEEKS);
+
     const summary =
       totalVotes === 0
         ? { themes: "No votes came in this week.", recommendedOption: null, recommendedReason: "No votes to go on." }
-        : await summarizeVotes(options, poll.optionTags ?? {}, tally, votes);
+        : await summarizeVotes(options, poll.optionTags ?? {}, tally, votes, recentPicks);
 
     await pollDoc.ref.collection(COLLECTIONS.digest).doc(DIGEST_DOC_ID).set({
       tally,
@@ -129,11 +135,27 @@ export const generateDigest = onSchedule(
   }
 );
 
+async function getRecentPicks(db: FirebaseFirestore.Firestore, limit: number): Promise<string[]> {
+  if (limit <= 0) {
+    return [];
+  }
+  const snap = await db
+    .collection(COLLECTIONS.polls)
+    .where("status", "==", POLL_STATUS.sent)
+    .orderBy("opensAt", "desc")
+    .limit(limit)
+    .get();
+  return snap.docs
+    .map((doc) => (doc.data() as { confirmedOption?: unknown }).confirmedOption)
+    .filter((option): option is string => typeof option === "string");
+}
+
 async function summarizeVotes(
   options: string[],
   optionTags: Record<string, string[]>,
   tally: Record<string, number>,
-  votes: VoteDoc[]
+  votes: VoteDoc[],
+  recentPicks: string[]
 ): Promise<DigestSummary> {
   const optionsList = options
     .map((option) => {
@@ -143,6 +165,11 @@ async function summarizeVotes(
     .join("\n");
 
   const rawTexts = votes.map((v) => `"${v.rawBody}" -> ${v.choice}`).join("\n");
+
+  const recentPicksNote =
+    recentPicks.length > 0
+      ? `\n\nRecently picked (${recentPicks.join(", ")}) — avoid recommending these again unless votes clearly favor them anyway.`
+      : "";
 
   const client = new Anthropic({ apiKey: ANTHROPIC_API_KEY.value() });
   const response = await client.messages.create({
@@ -155,7 +182,7 @@ async function summarizeVotes(
         role: "user",
         content:
           `This week's lunch poll options and raw vote counts:\n${optionsList}\n\n` +
-          `The raw text replies behind those counts:\n${rawTexts}\n\n` +
+          `The raw text replies behind those counts:\n${rawTexts}${recentPicksNote}\n\n` +
           "Summarize the sentiment/themes behind these votes and recommend a pick.",
       },
     ],

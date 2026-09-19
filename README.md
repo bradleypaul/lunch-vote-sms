@@ -21,17 +21,22 @@ any time, independent of the weekly poll — see **Activity ideas** below.
    alone — no automated reply, no logged "failure." It's just an ordinary
    text in your Messages app for you to notice and answer personally if you
    want to.
-3. **Thursday** — `generateDigest` (Cloud Scheduler) reads the week's votes,
-   has Haiku synthesize a tally + sentiment themes + a recommended pick, and
-   texts that digest to **your own number**. The poll moves to
-   `awaiting_approval`.
-4. **You reply** — texting back (from your own number) routes to
+3. **Wednesday** — `sendVoteReminder` (Cloud Scheduler) texts a one-time
+   nudge to any active member who hasn't voted yet, so silence before the
+   digest generates isn't just assumed as "no opinion."
+4. **Thursday** — `generateDigest` (Cloud Scheduler) reads the week's votes,
+   has Haiku synthesize a tally + sentiment themes + a recommended pick
+   (nudged to avoid repeating the last `AVOID_REPEAT_WEEKS` picks unless
+   votes clearly favor a repeat anyway), and texts that digest to **your own
+   number**. The poll moves to `awaiting_approval`.
+5. **You reply** — texting back (from your own number) routes to
    `approvalHandler` instead of vote classification. Reply `approve` to
    confirm the digest's recommendation, or `override <option>` to pick
    something else — either exact keywords or free-form phrasing (Haiku
    fills in for anything the exact match doesn't recognize). Either way,
    `sendFinalAnnouncement` texts the group the confirmed where (and when, if
-   set) and the poll moves to `sent`.
+   set) and the poll moves to `sent`. If you haven't replied by **Friday**,
+   `sendApprovalReminder` texts you one more nudge.
 
 Sending from a phone dedicated to this project (rather than your daily
 driver) keeps the automation's texts separate from your own — see **Manual
@@ -83,11 +88,18 @@ business-messaging account (Twilio, etc.) at all.
     classifyApprovalReply.ts      Haiku fallback for free-form approve/override replies
     classifyActivityIdea.ts       Haiku tool-use call: free text -> {isIdea, kind, activity}
     classifyPromptReply.ts        Haiku fallback for free-form yes/no/maybe prompt replies
+    classifyOwnerIntent.ts        Haiku fallback covering every other admin command
+    classifyPollTags.ts           Haiku call: option names -> best-effort optionTags
     safeClassify.ts               wraps a classifyX call, falls back instead of throwing
+    pollUtils.ts                  shared findOpenPoll query
     generateDigest.ts             scheduled: tally + Haiku summary -> digest doc + SMS to owner
     generateIdeaDigest.ts         scheduled: tallies host/outing responses -> SMS to owner
+    sendVoteReminder.ts            scheduled: nudges members who haven't voted yet
+    sendApprovalReminder.ts        scheduled: nudges the owner if a digest is still unanswered
     approvalHandler.ts            parses owner's approve/override reply
     inviteHandler.ts               parses owner's "invite <phone>" command, texts the invitee
+    pollCommandHandler.ts          parses owner's "poll <option>, ..." command, creates the poll
+    ownerCommandHandler.ts         natural-language fallback dispatcher for admin commands
     signupHandler.ts                resolves an invitee's yes/no reply to a pending invite
     memberManagementHandler.ts    owner's "members" / "remove" / "canhost" commands
     helpHandler.ts                 "help" for the owner (admin commands) or a member (their commands)
@@ -145,19 +157,31 @@ direct client reads/writes.
 ## Admin commands
 
 None of this requires touching Firestore directly — text the bot number
-**from your own (owner's) number**. `voteWebhook` tries each of these in
-order against anything you send; whatever doesn't match any of them falls
-through to being read as an approve/override reply to the current digest.
+**from your own (owner's) number**. You don't need to get the exact
+syntax right: just describe what you want ("can you add Jane, her number
+is 512-555-1234" works as well as `invite Jane 5125551234`). Every command
+below is also understood in plain language — the exact syntax is only
+there because it's free and instant, not because it's required.
 
-| Command | Does |
-| --- | --- |
-| `help` | Texts back this list |
-| `invite <name>? <phone>` | Invites someone (see **Signup** below) |
-| `approve` | Confirms the digest's recommended pick |
-| `override <option>` | Picks a different option than recommended |
-| `members` | Texts back every group member and their status (pending / active / active, can host) |
-| `remove <name or phone>` | Deletes that member's `groupMembers` doc |
-| `canhost <name or phone> yes\|no` | Sets whether that member gets asked to host a `host_needed` activity idea |
+| Command | Plain-language example | Does |
+| --- | --- | --- |
+| `help` | "what can I do here" | Texts back this list |
+| `invite <name>? <phone>` | "add Jake, 512-555-1234" | Invites someone (see **Signup** below) |
+| `poll <option>, <option>, ...` | "let's do a poll for chipotle or panera" | Starts a new poll (see **Poll creation** below) |
+| `approve` | "yeah let's go with that" | Confirms the digest's recommended pick |
+| `override <option>` | "let's actually do panera instead" | Picks a different option than recommended |
+| `members` | "who's in the group" | Texts back every group member and their status (pending / active / active, can host) |
+| `remove <name or phone>` | "take Jake out of the group" | Deletes that member's `groupMembers` doc |
+| `canhost <name or phone> yes\|no` | "Jake can host from now on" | Sets whether that member gets asked to host a `host_needed` activity idea |
+
+Under the hood: `voteWebhook` first tries each command's exact syntax in
+turn (all free, instant, no API call — see `OWNER_COMMAND_HANDLERS` in
+`voteWebhook.ts`), including `approve`/`override`'s own existing
+fast-path-then-Haiku-fallback (`approvalHandler.ts`). Only if *none* of
+those match does it fall through to `classifyOwnerIntent` (one Haiku
+call covering `invite`/`poll`/`members`/`remove`/`canhost`/`help`) — see
+`ownerCommandHandler.ts`. Both paths call the same underlying Firestore
+actions, so which one fires is invisible to you either way.
 
 `<name or phone>` in `remove` and `canhost` matches case-insensitively
 against a member's stored `name`, or — if what you typed normalizes to 10
@@ -167,6 +191,19 @@ or 11 digits — directly by phone number, so either `remove Jane` or
 Active members have their own, shorter command: texting **`help`** back
 to the bot texts them what *they* can do (vote, propose an activity, reply
 yes/no/maybe to a prompt) — see `helpHandler.ts`.
+
+## Poll creation
+
+Text `poll <option>, <option>, ...` (comma-separated, at least two) — or
+just describe it in plain language, e.g. "start a poll for chipotle,
+panera, and chili's this week." `pollCommandHandler` creates the `open`
+poll doc, and `classifyPollTags` (Haiku, best-effort — a failure here just
+means the poll gets created with no tags, not a blocked creation) fills in
+descriptive `optionTags` for each option, the same as a manually-seeded
+poll would have, so loose-sentiment vote matching ("something spicy")
+works on a text-created poll too. `sendAnnouncement` still does the actual
+weekly send to the group on its own schedule — this just creates the poll
+doc, it doesn't immediately text everyone.
 
 ## Signup
 
@@ -349,11 +386,13 @@ needs to be a real, funded key.)
    is Firestore config, not a hardcoded list, so it's editable without a
    redeploy. Set `eventDetails` on the poll doc if you want a time/place
    note folded into the final announcement.
-10. Adjust `TIMEZONE`, `ANNOUNCEMENT_SCHEDULE`, `DIGEST_SCHEDULE`, and
-    `IDEA_DIGEST_WINDOW_HOURS`/`IDEA_DIGEST_CHECK_SCHEDULE` in `config.ts`
-    to match your actual cadence — the defaults (Monday 9am / Thursday
-    5pm, America/New_York, 24h idea window checked hourly) are
-    placeholders.
+10. Adjust `TIMEZONE`, `ANNOUNCEMENT_SCHEDULE`, `VOTE_REMINDER_SCHEDULE`,
+    `DIGEST_SCHEDULE`, `APPROVAL_REMINDER_SCHEDULE`,
+    `IDEA_DIGEST_WINDOW_HOURS`/`IDEA_DIGEST_CHECK_SCHEDULE`, and
+    `AVOID_REPEAT_WEEKS` in `config.ts` to match your actual cadence — the
+    defaults (Monday announcement / Wednesday vote reminder / Thursday
+    digest / Friday approval reminder, America/New_York, 24h idea window
+    checked hourly, avoid the last 2 picks) are placeholders.
 
 ## Deploying
 
@@ -362,9 +401,10 @@ cd functions && npm run build
 firebase deploy --only functions
 ```
 
-`sendAnnouncement`, `generateDigest`, and `generateIdeaDigest` are
-`onSchedule` functions — Firebase provisions their Cloud Scheduler jobs
-automatically on deploy, no separate `gcloud scheduler` setup needed.
+`sendAnnouncement`, `sendVoteReminder`, `generateDigest`,
+`sendApprovalReminder`, and `generateIdeaDigest` are all `onSchedule`
+functions — Firebase provisions their Cloud Scheduler jobs automatically
+on deploy, no separate `gcloud scheduler` setup needed.
 
 ## Known limitations
 
@@ -372,15 +412,12 @@ automatically on deploy, no separate `gcloud scheduler` setup needed.
   most recently opened poll in the relevant status; if more than one is
   left in that status simultaneously, only the newest is used (older ones
   silently ignored, not an error).
-- **No automatic poll creation.** Each week's `polls` doc (options, tags,
-  opensAt/closesAt, eventDetails) is seeded manually in Firestore before
-  `sendAnnouncement` fires — this repo only sends and tallies, it doesn't
-  author the poll.
 - **The Haiku-calling functions cost real API calls.** `classifyVote`,
   `classifyApprovalReply`, `classifyActivityIdea`, `classifyPromptReply`,
-  and `generateDigest`'s summary step all hit the Anthropic API live,
-  including against the local emulator — see **Cost notes** for expected
-  volume/cost, but there's no offline/mock mode built in.
+  `classifyOwnerIntent`, `classifyPollTags`, and `generateDigest`'s summary
+  step all hit the Anthropic API live, including against the local
+  emulator — see **Cost notes** for expected volume/cost, but there's no
+  offline/mock mode built in.
 - **Depends on one phone staying online.** Delivery and inbound replies
   both route through the SMS Gateway app on a single device — if it's
   off, out of battery, or disconnected, texts queue up (or are missed
@@ -388,7 +425,6 @@ automatically on deploy, no separate `gcloud scheduler` setup needed.
 
 ## Stretch goals (not implemented)
 
-- A reminder nudge to yourself if the digest goes unanswered for ~24 hours.
 - A minimal read-only dashboard as a second view onto the same data.
 
 ## Cost notes
