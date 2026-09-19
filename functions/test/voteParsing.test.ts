@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { normalizeText, parseApprovalReply, parseInviteCommand, parsePromptReply, parseVote } from "../src/voteParsing";
+import {
+  isHelpCommand,
+  isMembersCommand,
+  normalizeText,
+  parseApprovalReply,
+  parseCanHostCommand,
+  parseInviteCommand,
+  parsePromptReply,
+  parseRemoveCommand,
+  parseVote,
+} from "../src/voteParsing";
 
 const OPTIONS = ["Chili's", "Panera", "Chipotle"];
 
@@ -118,25 +128,48 @@ describe("parsePromptReply", () => {
 });
 
 describe("parseInviteCommand", () => {
-  it("parses a phone number with no name", () => {
-    expect(parseInviteCommand("invite 5125551234")).toEqual({ name: null, phoneNumber: "5125551234" });
+  it("parses a phone number with no name, normalized to E.164", () => {
+    expect(parseInviteCommand("invite 5125551234")).toEqual({ name: null, phoneNumber: "+15125551234" });
   });
 
   it("parses a name followed by a phone number", () => {
-    expect(parseInviteCommand("invite Jane 5125551234")).toEqual({ name: "Jane", phoneNumber: "5125551234" });
+    expect(parseInviteCommand("invite Jane 5125551234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
   });
 
-  it("accepts a punctuated phone number", () => {
-    expect(parseInviteCommand("invite Jane 512-555-1234")).toEqual({ name: "Jane", phoneNumber: "512-555-1234" });
+  it("normalizes a punctuated phone number to E.164", () => {
+    expect(parseInviteCommand("invite Jane 512-555-1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
     expect(parseInviteCommand("invite +15125551234")).toEqual({ name: null, phoneNumber: "+15125551234" });
   });
 
+  it("normalizes a parenthesized area code with an internal space", () => {
+    expect(parseInviteCommand("invite Jane (512) 555-1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite (512) 555-1234")).toEqual({ name: null, phoneNumber: "+15125551234" });
+  });
+
+  it("normalizes parens with or without a following separator", () => {
+    expect(parseInviteCommand("invite Jane (512)555-1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane (512)5551234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane (512) 5551234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+  });
+
+  it("normalizes any mix of hyphen, dot, space, or no separator between groups", () => {
+    expect(parseInviteCommand("invite Jane 512-555.1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane 512 5551234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane 5125551234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+  });
+
+  it("normalizes dot-separated and leading-country-code formats", () => {
+    expect(parseInviteCommand("invite Jane 512.555.1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane 1-512-555-1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+    expect(parseInviteCommand("invite Jane +1 512-555-1234")).toEqual({ name: "Jane", phoneNumber: "+15125551234" });
+  });
+
   it("joins a multi-word name", () => {
-    expect(parseInviteCommand("invite Jane Doe 5125551234")).toEqual({ name: "Jane Doe", phoneNumber: "5125551234" });
+    expect(parseInviteCommand("invite Jane Doe 5125551234")).toEqual({ name: "Jane Doe", phoneNumber: "+15125551234" });
   });
 
   it("is case-insensitive on the command keyword", () => {
-    expect(parseInviteCommand("Invite 5125551234")).toEqual({ name: null, phoneNumber: "5125551234" });
+    expect(parseInviteCommand("Invite 5125551234")).toEqual({ name: null, phoneNumber: "+15125551234" });
   });
 
   it("returns null when the message doesn't start with invite", () => {
@@ -147,5 +180,70 @@ describe("parseInviteCommand", () => {
   it("returns null when the last word isn't a plausible phone number", () => {
     expect(parseInviteCommand("invite Jane")).toBeNull();
     expect(parseInviteCommand("invite Jane 12345")).toBeNull();
+  });
+});
+
+describe("isHelpCommand", () => {
+  it("recognizes help case-insensitively and with stray punctuation", () => {
+    expect(isHelpCommand("help")).toBe(true);
+    expect(isHelpCommand("Help")).toBe(true);
+    expect(isHelpCommand("HELP!")).toBe(true);
+    expect(isHelpCommand("  help  ")).toBe(true);
+  });
+
+  it("returns false for anything else", () => {
+    expect(isHelpCommand("help me choose")).toBe(false);
+    expect(isHelpCommand("")).toBe(false);
+  });
+});
+
+describe("isMembersCommand", () => {
+  it("recognizes members case-insensitively", () => {
+    expect(isMembersCommand("members")).toBe(true);
+    expect(isMembersCommand("Members")).toBe(true);
+  });
+
+  it("returns false for anything else", () => {
+    expect(isMembersCommand("member")).toBe(false);
+    expect(isMembersCommand("list members")).toBe(false);
+  });
+});
+
+describe("parseRemoveCommand", () => {
+  it("parses a name or phone number", () => {
+    expect(parseRemoveCommand("remove Jane")).toEqual({ who: "Jane" });
+    expect(parseRemoveCommand("remove 5125551234")).toEqual({ who: "5125551234" });
+    expect(parseRemoveCommand("remove Jane Doe")).toEqual({ who: "Jane Doe" });
+  });
+
+  it("is case-insensitive on the command keyword", () => {
+    expect(parseRemoveCommand("Remove Jane")).toEqual({ who: "Jane" });
+  });
+
+  it("returns null when there's nothing to remove or no keyword", () => {
+    expect(parseRemoveCommand("remove")).toBeNull();
+    expect(parseRemoveCommand("remove ")).toBeNull();
+    expect(parseRemoveCommand("Jane")).toBeNull();
+  });
+});
+
+describe("parseCanHostCommand", () => {
+  it("parses a yes/no toggle by name or phone", () => {
+    expect(parseCanHostCommand("canhost Jane yes")).toEqual({ who: "Jane", canHost: true });
+    expect(parseCanHostCommand("canhost Jane no")).toEqual({ who: "Jane", canHost: false });
+    expect(parseCanHostCommand("canhost 5125551234 yes")).toEqual({ who: "5125551234", canHost: true });
+  });
+
+  it("is case-insensitive throughout", () => {
+    expect(parseCanHostCommand("CanHost Jane YES")).toEqual({ who: "Jane", canHost: true });
+  });
+
+  it("handles a multi-word name", () => {
+    expect(parseCanHostCommand("canhost Jane Doe yes")).toEqual({ who: "Jane Doe", canHost: true });
+  });
+
+  it("returns null without a trailing yes/no", () => {
+    expect(parseCanHostCommand("canhost Jane")).toBeNull();
+    expect(parseCanHostCommand("canhost Jane maybe")).toBeNull();
   });
 });

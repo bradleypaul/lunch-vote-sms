@@ -89,6 +89,8 @@ business-messaging account (Twilio, etc.) at all.
     approvalHandler.ts            parses owner's approve/override reply
     inviteHandler.ts               parses owner's "invite <phone>" command, texts the invitee
     signupHandler.ts                resolves an invitee's yes/no reply to a pending invite
+    memberManagementHandler.ts    owner's "members" / "remove" / "canhost" commands
+    helpHandler.ts                 "help" for the owner (admin commands) or a member (their commands)
     activityIdeaHandler.ts        creates an activity idea, prompts the relevant members
     promptReplyHandler.ts         resolves a member's reply to a pending host/outing prompt
     sendAnnouncement.ts           scheduled: texts the week's poll to the group
@@ -140,24 +142,45 @@ is stored in Secret Manager rather than Firestore for the same reason.
 Firestore access is Admin-SDK-only — see `firestore.rules`, which denies all
 direct client reads/writes.
 
+## Admin commands
+
+None of this requires touching Firestore directly — text the bot number
+**from your own (owner's) number**. `voteWebhook` tries each of these in
+order against anything you send; whatever doesn't match any of them falls
+through to being read as an approve/override reply to the current digest.
+
+| Command | Does |
+| --- | --- |
+| `help` | Texts back this list |
+| `invite <name>? <phone>` | Invites someone (see **Signup** below) |
+| `approve` | Confirms the digest's recommended pick |
+| `override <option>` | Picks a different option than recommended |
+| `members` | Texts back every group member and their status (pending / active / active, can host) |
+| `remove <name or phone>` | Deletes that member's `groupMembers` doc |
+| `canhost <name or phone> yes\|no` | Sets whether that member gets asked to host a `host_needed` activity idea |
+
+`<name or phone>` in `remove` and `canhost` matches case-insensitively
+against a member's stored `name`, or — if what you typed normalizes to 10
+or 11 digits — directly by phone number, so either `remove Jane` or
+`remove 5125551234` finds the same person.
+
+Active members have their own, shorter command: texting **`help`** back
+to the bot texts them what *they* can do (vote, propose an activity, reply
+yes/no/maybe to a prompt) — see `helpHandler.ts`.
+
 ## Signup
 
-Adding a group member doesn't require touching Firestore directly. Text
-the bot number **from your own (owner's) number**:
-
-```text
-invite Jane 5125551234
-```
-
-(the phone number must be the last word; the name is optional — `invite
-5125551234` works too). `inviteHandler` creates a `groupMembers` doc with
-`active: false` and texts that number an explanation of what this is,
-asking them to reply **YES** to join. Their next reply is read by
-`signupHandler` as a yes/no answer (same fast-keyword-then-Haiku-fallback
-approach as everywhere else): **yes** sets `active: true`; **no** deletes
-the invite so a later re-`invite` starts clean; anything else (a "maybe,"
-or nothing recognizable) just leaves the invite pending — they can reply
-again whenever.
+Text `invite <name>? <phone>` (phone number formats are flexible — digits
+only, dashes, dots, or `(512) 555-1234`-style parens all work, and the
+number just needs to be at the end of the message; the name is optional).
+`inviteHandler` creates a `groupMembers` doc with `active: false` and
+texts that number an explanation of what this is, asking them to reply
+**YES** to join. Their next reply is read by `signupHandler` as a yes/no
+answer (same fast-keyword-then-Haiku-fallback approach as everywhere
+else): **yes** sets `active: true`; **no** deletes the invite so a later
+re-`invite` starts clean; anything else (a "maybe," or nothing
+recognizable) just leaves the invite pending — they can reply again
+whenever.
 
 ## Activity ideas
 

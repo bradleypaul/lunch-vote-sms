@@ -22,7 +22,23 @@ import { handlePromptReply } from "./promptReplyHandler";
 import { handleActivityIdea } from "./activityIdeaHandler";
 import { handleInviteCommand } from "./inviteHandler";
 import { handleSignupReply } from "./signupHandler";
+import { handleMembersCommand, handleRemoveCommand, handleCanHostCommand } from "./memberManagementHandler";
+import { handleOwnerHelpCommand, handleMemberHelpCommand } from "./helpHandler";
 import { safeClassify } from "./safeClassify";
+
+type OwnerCommandHandler = (db: FirebaseFirestore.Firestore, message: string) => Promise<boolean>;
+
+// Tried in order against any text from the owner's own number; the first
+// one that recognizes the message handles it. Anything none of them
+// recognize falls through to handleApproval (see below), since that's
+// still the owner's most common kind of reply (approve/override a digest).
+const OWNER_COMMAND_HANDLERS: OwnerCommandHandler[] = [
+  handleOwnerHelpCommand,
+  handleInviteCommand,
+  handleMembersCommand,
+  handleRemoveCommand,
+  handleCanHostCommand,
+];
 
 interface PollDoc {
   options: string[];
@@ -42,12 +58,13 @@ interface HttpResponse {
 /**
  * HTTPS endpoint SMS Gateway's cloud relay calls (as the `sms:received`
  * webhook) whenever a text arrives on the phone. Verifies the request,
- * then branches on sender: the owner's texts are tried as an "invite
- * <phone>" command first, falling back to an approval reply; a pending
- * (invited but not yet active) member's texts are read as a yes/no signup
- * answer; and an active member's texts try each interpretation in order —
- * an answer to a pending host/outing prompt, a vote against an open poll,
- * or a new activity-idea proposal.
+ * then branches on sender: the owner's texts are tried against each admin
+ * command in turn (help, invite, members, remove, canhost), falling back
+ * to an approval reply if none match; a pending (invited but not yet
+ * active) member's texts are read as a yes/no signup answer; and an active
+ * member's texts try each interpretation in order — "help", an answer to a
+ * pending host/outing prompt, a vote against an open poll, or a new
+ * activity-idea proposal.
  *
  * Every rejection/no-match path (bad signature, unknown sender,
  * low-confidence classification) returns 2xx/4xx with a distinct,
@@ -72,8 +89,14 @@ export const voteWebhook = onRequest(
     const db = admin.firestore();
 
     if (normalizePhoneDigits(sender) === normalizePhoneDigits(MY_PHONE_NUMBER.value())) {
-      const wasInvite = await handleInviteCommand(db, message);
-      if (!wasInvite) {
+      let handled = false;
+      for (const handler of OWNER_COMMAND_HANDLERS) {
+        if (await handler(db, message)) {
+          handled = true;
+          break;
+        }
+      }
+      if (!handled) {
         await handleApproval(db, message);
       }
       res.status(200).send("ok");
@@ -92,6 +115,11 @@ export const voteWebhook = onRequest(
     const member = memberSnap.data() as GroupMemberDoc;
     if (!member.active) {
       await handleSignupReply(db, phoneHash, message);
+      res.status(200).send("ok");
+      return;
+    }
+
+    if (await handleMemberHelpCommand(sender, message)) {
       res.status(200).send("ok");
       return;
     }

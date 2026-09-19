@@ -108,14 +108,25 @@ export interface InviteCommand {
   phoneNumber: string;
 }
 
+// Matches a US phone number at the end of the string, tolerating the
+// common ways people actually type one: bare digits, dashes, dots, a
+// space-separated area code in parens ("(512) 555-1234"), and an optional
+// leading country code ("+1", "1-"). Anchored to the end (allowing
+// trailing whitespace) so it also marks where the name portion ends.
+const TRAILING_PHONE = /(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\s*$/;
+
 /**
  * Parses the owner's "invite <phone>" or "invite <name> <phone>" command.
- * The phone number must be the message's last word, normalizing (digits
- * only) to exactly 10 or 11 digits (a US number, with or without a leading
- * country code) — anything before it is taken as the name. Returns null if
- * the message doesn't start with "invite" or the last word isn't a
- * plausible phone number, so the caller can fall through to treating it as
- * an ordinary approval reply instead.
+ * The phone number must be at the end of the message, in any common US
+ * format (see TRAILING_PHONE) — anything before it is taken as the name.
+ * The returned phoneNumber is normalized to E.164 (+1XXXXXXXXXX), not the
+ * raw typed text — SMS Gateway's send API rejects punctuated numbers like
+ * "(512) 555-1234", so callers need a clean value both for sending and for
+ * storing consistently in Firestore.
+ *
+ * Returns null if the message doesn't start with "invite" or nothing at
+ * the end looks like a phone number, so the caller can fall through to
+ * treating it as an ordinary approval reply instead.
  */
 export function parseInviteCommand(rawBody: string): InviteCommand | null {
   const match = rawBody.trim().match(/^invite\s+(.+)$/i);
@@ -123,13 +134,67 @@ export function parseInviteCommand(rawBody: string): InviteCommand | null {
     return null;
   }
 
-  const words = match[1].trim().split(/\s+/);
-  const lastWord = words[words.length - 1];
-  const digits = lastWord.replace(/[^\d]/g, "");
-  if (digits.length !== 10 && digits.length !== 11) {
+  const rest = match[1].trim();
+  const phoneMatch = rest.match(TRAILING_PHONE);
+  if (!phoneMatch) {
     return null;
   }
 
-  const name = words.slice(0, -1).join(" ").trim();
-  return { name: name || null, phoneNumber: lastWord };
+  const digits = phoneMatch[0].replace(/[^\d]/g, "");
+  if (digits.length !== 10 && digits.length !== 11) {
+    return null;
+  }
+  const phoneNumber = digits.length === 11 ? `+${digits}` : `+1${digits}`;
+
+  const name = rest.slice(0, phoneMatch.index).trim();
+  return { name: name || null, phoneNumber };
+}
+
+/** True if the message is exactly the "help" command (any case/punctuation). */
+export function isHelpCommand(rawBody: string): boolean {
+  return normalizeText(rawBody) === "help";
+}
+
+/** True if the message is exactly the owner's "members" command (list all group members). */
+export function isMembersCommand(rawBody: string): boolean {
+  return normalizeText(rawBody) === "members";
+}
+
+export interface RemoveCommand {
+  who: string;
+}
+
+/**
+ * Parses the owner's "remove <name or phone>" command. `who` is returned
+ * as typed — the caller resolves it against groupMembers by name or phone,
+ * since this parser has no access to Firestore.
+ */
+export function parseRemoveCommand(rawBody: string): RemoveCommand | null {
+  const match = rawBody.trim().match(/^remove\s+(.+)$/i);
+  if (!match) {
+    return null;
+  }
+  const who = match[1].trim();
+  return who ? { who } : null;
+}
+
+export interface CanHostCommand {
+  who: string;
+  canHost: boolean;
+}
+
+/**
+ * Parses the owner's "canhost <name or phone> yes|no" command, setting
+ * whether that member gets asked to host a `host_needed` activity idea.
+ */
+export function parseCanHostCommand(rawBody: string): CanHostCommand | null {
+  const match = rawBody.trim().match(/^canhost\s+(.+?)\s+(yes|no)$/i);
+  if (!match) {
+    return null;
+  }
+  const who = match[1].trim();
+  if (!who) {
+    return null;
+  }
+  return { who, canHost: match[2].toLowerCase() === "yes" };
 }
