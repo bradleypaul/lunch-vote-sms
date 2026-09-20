@@ -3,6 +3,7 @@ import {
   isHelpCommand,
   isMembersCommand,
   normalizeText,
+  parseAdminCommand,
   parseApprovalReply,
   parseCanHostCommand,
   parseInviteCommand,
@@ -246,6 +247,27 @@ describe("parseCanHostCommand", () => {
   it("returns null without a trailing yes/no", () => {
     expect(parseCanHostCommand("canhost Jane")).toBeNull();
     expect(parseCanHostCommand("canhost Jane maybe")).toBeNull();
+  });
+});
+
+describe("parseAdminCommand", () => {
+  it("parses a yes/no toggle by name or phone", () => {
+    expect(parseAdminCommand("admin Jane yes")).toEqual({ who: "Jane", isAdmin: true });
+    expect(parseAdminCommand("admin Jane no")).toEqual({ who: "Jane", isAdmin: false });
+    expect(parseAdminCommand("admin 5125551234 yes")).toEqual({ who: "5125551234", isAdmin: true });
+  });
+
+  it("is case-insensitive throughout", () => {
+    expect(parseAdminCommand("Admin Jane YES")).toEqual({ who: "Jane", isAdmin: true });
+  });
+
+  it("handles a multi-word name", () => {
+    expect(parseAdminCommand("admin Jane Doe yes")).toEqual({ who: "Jane Doe", isAdmin: true });
+  });
+
+  it("returns null without a trailing yes/no", () => {
+    expect(parseAdminCommand("admin Jane")).toBeNull();
+    expect(parseAdminCommand("admin Jane maybe")).toBeNull();
   });
 });
 

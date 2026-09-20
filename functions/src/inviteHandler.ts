@@ -1,4 +1,4 @@
-import { COLLECTIONS, MY_PHONE_NUMBER, hashPhoneNumber, normalizePhoneDigits } from "./config";
+import { COLLECTIONS, hashPhoneNumber, normalizePhoneDigits } from "./config";
 import { parseInviteCommand } from "./voteParsing";
 import { sendMessage } from "./gatewayClient";
 
@@ -25,9 +25,9 @@ function toE164(rawPhoneNumber: string): string | null {
  * explanation of what this number is, asking them to reply yes to join.
  * The doc existing-but-inactive is what routes their reply to
  * handleSignupReply instead of it being silently rejected as unknown (see
- * voteWebhook.ts). Also texts the owner back a one-line confirmation of
- * what was sent to whom — the owner has no other way to see this worked
- * short of checking Cloud Logging.
+ * voteWebhook.ts). Also texts `replyTo` (the admin who issued this) back a
+ * one-line confirmation of what was sent to whom — otherwise the only way
+ * to see this worked is checking Cloud Logging.
  *
  * Shared by the fast-path "invite <phone>" parser and the natural-language
  * fallback ("can you add Jane, her number's 512-555-1234") — both just
@@ -36,13 +36,14 @@ function toE164(rawPhoneNumber: string): string | null {
 export async function createInvite(
   db: FirebaseFirestore.Firestore,
   name: string | null,
-  rawPhoneNumber: string
+  rawPhoneNumber: string,
+  replyTo: string
 ): Promise<void> {
   const phoneNumber = toE164(rawPhoneNumber);
   if (!phoneNumber) {
     console.log(`inviteHandler: rejected, unusable phone number "${rawPhoneNumber}"`);
     try {
-      await sendMessage(MY_PHONE_NUMBER.value(), `Couldn't make sense of the phone number "${rawPhoneNumber}" — try again?`);
+      await sendMessage(replyTo, `Couldn't make sense of the phone number "${rawPhoneNumber}" — try again?`);
     } catch (err) {
       console.error("inviteHandler: bad-number notice send failed", err);
     }
@@ -79,24 +80,24 @@ export async function createInvite(
     ? `Got your invite for ${who}, but the text to them failed to send — check the logs.`
     : `Invited ${who} — waiting on their reply.`;
   try {
-    await sendMessage(MY_PHONE_NUMBER.value(), confirmationText);
+    await sendMessage(replyTo, confirmationText);
   } catch (err) {
-    console.error(`inviteHandler: owner confirmation send failed phoneHash=${phoneHash}`, err);
+    console.error(`inviteHandler: confirmation send failed phoneHash=${phoneHash}`, err);
   }
 }
 
 /**
- * Fast path: handles the owner's exact "invite <phone>" / "invite <name>
+ * Fast path: handles an admin's exact "invite <phone>" / "invite <name>
  * <phone>" syntax, free and instant. Returns whether the message matched
- * this syntax at all, so voteWebhook's owner command chain knows whether
+ * this syntax at all, so voteWebhook's admin command chain knows whether
  * to keep trying other interpretations.
  */
-export async function handleInviteCommand(db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
+export async function handleInviteCommand(db: FirebaseFirestore.Firestore, message: string, replyTo: string): Promise<boolean> {
   const invite = parseInviteCommand(message);
   if (!invite) {
     return false;
   }
 
-  await createInvite(db, invite.name, invite.phoneNumber);
+  await createInvite(db, invite.name, invite.phoneNumber, replyTo);
   return true;
 }

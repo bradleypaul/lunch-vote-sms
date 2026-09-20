@@ -6,6 +6,7 @@ export type OwnerIntent =
   | { action: "create_poll"; options: string[] }
   | { action: "remove_member"; who: string }
   | { action: "set_can_host"; who: string; canHost: boolean }
+  | { action: "set_is_admin"; who: string; isAdmin: boolean }
   | { action: "list_members" }
   | { action: "help" };
 
@@ -19,13 +20,15 @@ const CLASSIFY_OWNER_INTENT_TOOL: Anthropic.Tool = {
     properties: {
       action: {
         type: "string",
-        enum: ["invite", "create_poll", "remove_member", "set_can_host", "list_members", "help", "none"],
+        enum: ["invite", "create_poll", "remove_member", "set_can_host", "set_is_admin", "list_members", "help", "none"],
         description:
           "\"invite\" to add a new person; \"create_poll\" to start a new lunch poll with a list of options; " +
           "\"remove_member\" to delete someone from the group; \"set_can_host\" to change whether someone can " +
-          "be asked to host an activity; \"list_members\" to see everyone in the group; \"help\" if they're " +
-          "asking what they can do; \"none\" if the message doesn't clearly ask for any of these (e.g. it's " +
-          "approving/overriding a digest, which is handled elsewhere, or isn't an admin request at all).",
+          "be asked to host an activity; \"set_is_admin\" to promote or demote someone as an admin (giving or " +
+          "taking away access to these same admin commands); \"list_members\" to see everyone in the group; " +
+          "\"help\" if they're asking what they can do; \"none\" if the message doesn't clearly ask for any of " +
+          "these (e.g. it's approving/overriding a digest, which is handled elsewhere, or isn't an admin " +
+          "request at all).",
       },
       invitee_name: {
         type: "string",
@@ -42,11 +45,15 @@ const CLASSIFY_OWNER_INTENT_TOOL: Anthropic.Tool = {
       },
       member_identifier: {
         type: "string",
-        description: "For \"remove_member\" or \"set_can_host\": the name or phone number identifying the member.",
+        description: "For \"remove_member\", \"set_can_host\", or \"set_is_admin\": the name or phone number identifying the member.",
       },
       can_host: {
         type: "boolean",
         description: "For \"set_can_host\": true if they should be askable to host, false if not.",
+      },
+      is_admin: {
+        type: "boolean",
+        description: "For \"set_is_admin\": true to promote (grant admin access), false to demote (revoke it).",
       },
       confidence: {
         type: "number",
@@ -58,13 +65,13 @@ const CLASSIFY_OWNER_INTENT_TOOL: Anthropic.Tool = {
 };
 
 /**
- * Natural-language fallback for the owner's admin commands, run only after
- * none of the exact-syntax fast-path parsers (parseInviteCommand,
- * parsePollCommand, isMembersCommand, parseRemoveCommand,
- * parseCanHostCommand, isHelpCommand — see ownerCommandHandler) matched,
- * and after approve/override (which already has its own Haiku fallback
- * via classifyApprovalReply) didn't either. This is what lets the owner
- * just say "add Jane, her number's 512-555-1234" or "let's do a poll for
+ * Natural-language fallback for the admin commands, run only after none of
+ * the exact-syntax fast-path parsers (parseInviteCommand, parsePollCommand,
+ * isMembersCommand, parseRemoveCommand, parseCanHostCommand,
+ * parseAdminCommand, isHelpCommand — see ownerCommandHandler) matched, and
+ * after approve/override (which already has its own Haiku fallback via
+ * classifyApprovalReply) didn't either. This is what lets an admin just
+ * say "add Jane, her number's 512-555-1234" or "let's do a poll for
  * chipotle or panera" instead of needing exact command syntax.
  *
  * A hallucinated or incomplete action (missing the phone number an invite
@@ -82,7 +89,7 @@ export async function classifyOwnerIntent(message: string, confidenceThreshold: 
     messages: [
       {
         role: "user",
-        content: `The organizer of a lunch-poll SMS bot sent this text to the bot's admin line:\n"${message}"\n\nWhat admin action, if any, are they asking for?`,
+        content: `An admin of a lunch-poll SMS bot sent this text to the bot's admin line:\n"${message}"\n\nWhat admin action, if any, are they asking for?`,
       },
     ],
   });
@@ -101,6 +108,7 @@ export async function classifyOwnerIntent(message: string, confidenceThreshold: 
     poll_options?: unknown;
     member_identifier?: unknown;
     can_host?: unknown;
+    is_admin?: unknown;
     confidence?: unknown;
   };
 
@@ -132,6 +140,11 @@ export async function classifyOwnerIntent(message: string, confidenceThreshold: 
       const who = typeof input.member_identifier === "string" ? input.member_identifier.trim() : "";
       const canHost = typeof input.can_host === "boolean" ? input.can_host : null;
       return who && canHost !== null ? { action: "set_can_host", who, canHost } : null;
+    }
+    case "set_is_admin": {
+      const who = typeof input.member_identifier === "string" ? input.member_identifier.trim() : "";
+      const isAdmin = typeof input.is_admin === "boolean" ? input.is_admin : null;
+      return who && isAdmin !== null ? { action: "set_is_admin", who, isAdmin } : null;
     }
     case "list_members":
       return { action: "list_members" };

@@ -21,12 +21,15 @@ interface DigestDoc {
  * neither one can place with confidence is left alone — same as any other
  * text — so the owner can just reply again with something clearer.
  *
- * Returns whether it actually acted, so the caller (voteWebhook's owner
+ * Returns whether it actually acted, so the caller (voteWebhook's admin
  * command chain) knows whether to keep trying other interpretations —
  * "no poll awaiting approval" and "couldn't parse a reply" both count as
- * not having acted.
+ * not having acted. Takes (and ignores) a `replyTo` param purely so its
+ * signature matches every other command handler in that chain — approving
+ * doesn't confirm back to the sender, it announces to the whole group via
+ * sendFinalAnnouncement.
  */
-export async function handleApproval(db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
+export async function handleApproval(db: FirebaseFirestore.Firestore, message: string, _replyTo: string): Promise<boolean> {
   const pendingSnap = await db
     .collection(COLLECTIONS.polls)
     .where("status", "==", POLL_STATUS.awaitingApproval)

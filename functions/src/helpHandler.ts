@@ -1,4 +1,3 @@
-import { MY_PHONE_NUMBER } from "./config";
 import { isHelpCommand } from "./voteParsing";
 import { sendMessage } from "./gatewayClient";
 
@@ -10,6 +9,7 @@ const OWNER_HELP_TEXT = `Admin commands (or just describe what you want in plain
 - members — list all group members and their status
 - remove <name or phone> — remove a member
 - canhost <name or phone> yes|no — set who gets asked to host an activity idea
+- admin <name or phone> yes|no — promote or demote another admin
 - help — show this message`;
 
 const MEMBER_HELP_TEXT = `You're in the lunch poll group! No special format needed — just text naturally:
@@ -18,25 +18,25 @@ const MEMBER_HELP_TEXT = `You're in the lunch poll group! No special format need
 - If asked "want to host?" or "want to go?", just reply yes, no, or maybe, however you'd naturally say it
 - Text "help" any time to see this again`;
 
-/** Texts the owner the admin command list. */
-export async function sendOwnerHelpText(): Promise<void> {
+/** Texts `replyTo` (the admin who asked) the admin command list. */
+export async function sendOwnerHelpText(replyTo: string): Promise<void> {
   try {
-    await sendMessage(MY_PHONE_NUMBER.value(), OWNER_HELP_TEXT);
+    await sendMessage(replyTo, OWNER_HELP_TEXT);
   } catch (err) {
     console.error("helpHandler: owner help send failed", err);
   }
 }
 
 /**
- * Fast path: handles a "help" text from the owner, free and instant.
- * Returns whether the message matched, so voteWebhook's owner command
+ * Fast path: handles a "help" text from an admin, free and instant.
+ * Returns whether the message matched, so voteWebhook's admin command
  * chain knows whether to keep trying other interpretations.
  */
-export async function handleOwnerHelpCommand(_db: FirebaseFirestore.Firestore, message: string): Promise<boolean> {
+export async function handleOwnerHelpCommand(_db: FirebaseFirestore.Firestore, message: string, replyTo: string): Promise<boolean> {
   if (!isHelpCommand(message)) {
     return false;
   }
-  await sendOwnerHelpText();
+  await sendOwnerHelpText(replyTo);
   return true;
 }
 

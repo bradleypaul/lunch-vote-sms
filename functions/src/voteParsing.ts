@@ -199,6 +199,29 @@ export function parseCanHostCommand(rawBody: string): CanHostCommand | null {
   return { who, canHost: match[2].toLowerCase() === "yes" };
 }
 
+export interface AdminCommand {
+  who: string;
+  isAdmin: boolean;
+}
+
+/**
+ * Parses an admin's "admin <name or phone> yes|no" command, promoting or
+ * demoting that member's own admin status. Only reachable by someone
+ * already routed as an admin (see voteWebhook.ts) — this parser has no
+ * concept of permissions itself, it just extracts who/what was asked for.
+ */
+export function parseAdminCommand(rawBody: string): AdminCommand | null {
+  const match = rawBody.trim().match(/^admin\s+(.+?)\s+(yes|no)$/i);
+  if (!match) {
+    return null;
+  }
+  const who = match[1].trim();
+  if (!who) {
+    return null;
+  }
+  return { who, isAdmin: match[2].toLowerCase() === "yes" };
+}
+
 export interface PollCommand {
   options: string[];
 }

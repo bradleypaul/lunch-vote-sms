@@ -101,7 +101,7 @@ business-messaging account (Twilio, etc.) at all.
     pollCommandHandler.ts          parses owner's "poll <option>, ..." command, creates the poll
     ownerCommandHandler.ts         natural-language fallback dispatcher for admin commands
     signupHandler.ts                resolves an invitee's yes/no reply to a pending invite
-    memberManagementHandler.ts    owner's "members" / "remove" / "canhost" commands
+    memberManagementHandler.ts    admin's "members" / "remove" / "canhost" / "admin" commands
     helpHandler.ts                 "help" for the owner (admin commands) or a member (their commands)
     activityIdeaHandler.ts        creates an activity idea, prompts the relevant members
     promptReplyHandler.ts         resolves a member's reply to a pending host/outing prompt
@@ -123,12 +123,13 @@ firebase.json
 - `polls/{pollId}/votes/{phoneHash}` — `{ choice, confidence, receivedAt, rawBody }`
   (upsert on phone hash, so a repeat text overwrites rather than duplicates)
 - `polls/{pollId}/digest/current` — `{ tally, totalVotes, themes, recommendedOption, recommendedReason, sentAt, approvalStatus }`
-- `groupMembers/{phoneHash}` — `{ name, phoneNumber, active, canHost?, pendingPrompt? }`
+- `groupMembers/{phoneHash}` — `{ name, phoneNumber, active, canHost?, isAdmin?, pendingPrompt? }`
   (`active: false` means invited but not yet confirmed — see **Signup** below;
   `canHost`: eligible to be asked "want to host?" for a `host_needed` idea;
-  `pendingPrompt`: `{ ideaId }` while awaiting that member's yes/no/maybe —
-  set when they're asked, cleared on their next reply regardless of whether
-  it parsed)
+  `isAdmin`: routes this member's texts through the admin command chain —
+  see **Admin promotion**; `pendingPrompt`: `{ ideaId }` while awaiting
+  that member's yes/no/maybe — set when they're asked, cleared on their
+  next reply regardless of whether it parsed)
 - `activityIdeas/{ideaId}` — `{ kind, activity, proposerPhoneHash, createdAt, status }`
   (`kind`: `host_needed` | `outing`; `status`: `collecting` → `digested`)
 - `activityIdeas/{ideaId}/responses/{phoneHash}` — `{ response, receivedAt }`
@@ -157,11 +158,13 @@ direct client reads/writes.
 ## Admin commands
 
 None of this requires touching Firestore directly — text the bot number
-**from your own (owner's) number**. You don't need to get the exact
-syntax right: just describe what you want ("can you add Jane, her number
-is 512-555-1234" works as well as `invite Jane 5125551234`). Every command
-below is also understood in plain language — the exact syntax is only
-there because it's free and instant, not because it's required.
+**from an admin's number** (the root owner, `MY_PHONE_NUMBER`, always is
+one; anyone else needs to be promoted first — see **Admin promotion**
+below). You don't need to get the exact syntax right: just describe what
+you want ("can you add Jane, her number is 512-555-1234" works as well as
+`invite Jane 5125551234`). Every command below is also understood in
+plain language — the exact syntax is only there because it's free and
+instant, not because it's required.
 
 | Command | Plain-language example | Does |
 | --- | --- | --- |
@@ -170,23 +173,41 @@ there because it's free and instant, not because it's required.
 | `poll <option>, <option>, ...` | "let's do a poll for chipotle or panera" | Starts a new poll (see **Poll creation** below) |
 | `approve` | "yeah let's go with that" | Confirms the digest's recommended pick |
 | `override <option>` | "let's actually do panera instead" | Picks a different option than recommended |
-| `members` | "who's in the group" | Texts back every group member and their status (pending / active / active, can host) |
+| `members` | "who's in the group" | Texts back every group member and their status (pending / active / active, can host / admin) |
 | `remove <name or phone>` | "take Jake out of the group" | Deletes that member's `groupMembers` doc |
 | `canhost <name or phone> yes\|no` | "Jake can host from now on" | Sets whether that member gets asked to host a `host_needed` activity idea |
+| `admin <name or phone> yes\|no` | "make Jake an admin" | Promotes or demotes another admin (see **Admin promotion** below) |
 
 Under the hood: `voteWebhook` first tries each command's exact syntax in
-turn (all free, instant, no API call — see `OWNER_COMMAND_HANDLERS` in
+turn (all free, instant, no API call — see `ADMIN_COMMAND_HANDLERS` in
 `voteWebhook.ts`), including `approve`/`override`'s own existing
 fast-path-then-Haiku-fallback (`approvalHandler.ts`). Only if *none* of
 those match does it fall through to `classifyOwnerIntent` (one Haiku
-call covering `invite`/`poll`/`members`/`remove`/`canhost`/`help`) — see
-`ownerCommandHandler.ts`. Both paths call the same underlying Firestore
-actions, so which one fires is invisible to you either way.
+call covering `invite`/`poll`/`members`/`remove`/`canhost`/`admin`/`help`)
+— see `ownerCommandHandler.ts`. Both paths call the same underlying
+Firestore actions and reply to whichever admin actually sent the command,
+so which path fires is invisible to you either way.
 
-`<name or phone>` in `remove` and `canhost` matches case-insensitively
-against a member's stored `name`, or — if what you typed normalizes to 10
-or 11 digits — directly by phone number, so either `remove Jane` or
-`remove 5125551234` finds the same person.
+`<name or phone>` in `remove`, `canhost`, and `admin` matches
+case-insensitively against a member's stored `name`, or — if what you
+typed normalizes to 10 or 11 digits — directly by phone number, so either
+`remove Jane` or `remove 5125551234` finds the same person.
+
+## Admin promotion
+
+There's always exactly one root admin — whoever controls
+`MY_PHONE_NUMBER` in Secret Manager. Only an admin can create new ones:
+text `admin <name or phone> yes` to promote an existing `groupMembers`
+doc to `isAdmin: true`, which routes their future texts through the same
+admin command chain the root owner uses (including `admin` itself — a
+promoted admin can promote others, or demote anyone, including
+themselves, with `admin <name or phone> no`). Demoting just clears the
+flag; it doesn't remove them from the group the way `remove` does.
+
+The root admin can't be demoted this way — `MY_PHONE_NUMBER` isn't a
+`groupMembers` doc at all, it's a permanent, secret-backed identity
+checked before any Firestore lookup happens, so there's always at least
+one admin who can't be locked out by a mistaken `admin ... no`.
 
 Active members have their own, shorter command: texting **`help`** back
 to the bot texts them what *they* can do (vote, propose an activity, reply
