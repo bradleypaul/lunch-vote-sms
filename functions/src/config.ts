@@ -48,6 +48,7 @@ export const COLLECTIONS = {
   digest: "digest",
   activityIdeas: "activityIdeas",
   responses: "responses",
+  featureSuggestions: "featureSuggestions",
 } as const;
 
 export const POLL_STATUS = {

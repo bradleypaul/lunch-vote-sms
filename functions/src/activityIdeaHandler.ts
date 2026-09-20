@@ -1,5 +1,5 @@
 import { FieldValue } from "firebase-admin/firestore";
-import { COLLECTIONS, IDEA_STATUS } from "./config";
+import { COLLECTIONS, IDEA_STATUS, MY_PHONE_NUMBER } from "./config";
 import { sendMessage } from "./gatewayClient";
 import { ActivityIdeaKind } from "./classifyActivityIdea";
 
@@ -21,6 +21,11 @@ interface GroupMemberDoc {
  * Each targeted member gets a pendingPrompt on their groupMembers doc so
  * their next reply is read as answering this question (see
  * promptReplyHandler) instead of being treated as a vote or a new idea.
+ *
+ * Also texts the owner an immediate heads-up that an idea came in — the
+ * eventual yes/maybe/no tally still only goes out once generateIdeaDigest
+ * closes the response window, but the owner shouldn't have to wait that
+ * long just to learn an idea was proposed at all.
  */
 export async function handleActivityIdea(
   db: FirebaseFirestore.Firestore,
@@ -69,4 +74,12 @@ export async function handleActivityIdea(
   console.log(
     `activityIdeaHandler: ideaId=${ideaRef.id} kind=${classification.kind} activity="${classification.activity}" targeted=${targets.length}`
   );
+
+  const kindLabel = classification.kind === "host_needed" ? "Host needed" : "Outing";
+  const notice = `New activity idea — ${kindLabel}: ${classification.activity}. Asked ${targets.length} member${targets.length === 1 ? "" : "s"}; the tally will follow once responses come in.`;
+  try {
+    await sendMessage(MY_PHONE_NUMBER.value(), notice);
+  } catch (err) {
+    console.error(`activityIdeaHandler: owner notice send failed ideaId=${ideaRef.id}`, err);
+  }
 }

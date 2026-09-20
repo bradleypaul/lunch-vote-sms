@@ -16,9 +16,11 @@ import {
 import { verifyWebhookSignature } from "./webhookSignature";
 import { classifyVote } from "./classifyVote";
 import { classifyActivityIdea } from "./classifyActivityIdea";
+import { classifyFeatureSuggestion } from "./classifyFeatureSuggestion";
 import { handleApproval } from "./approvalHandler";
 import { handlePromptReply } from "./promptReplyHandler";
 import { handleActivityIdea } from "./activityIdeaHandler";
+import { handleFeatureSuggestion, handleSuggestionsCommand } from "./featureSuggestionHandler";
 import { handleInviteCommand } from "./inviteHandler";
 import { handleSignupReply } from "./signupHandler";
 import { handleMembersCommand, handleRemoveCommand, handleCanHostCommand, handleAdminCommand } from "./memberManagementHandler";
@@ -46,6 +48,7 @@ const ADMIN_COMMAND_HANDLERS: AdminCommandHandler[] = [
   handleRemoveCommand,
   handleCanHostCommand,
   handleAdminCommand,
+  handleSuggestionsCommand,
   handleApproval,
 ];
 
@@ -93,7 +96,8 @@ interface HttpResponse {
  * (invited but not yet active) member's texts are read as a yes/no signup
  * answer; and an active, non-admin member's texts try each interpretation
  * in order — "help", an answer to a pending host/outing prompt, a vote
- * against an open poll, or a new activity-idea proposal.
+ * against an open poll, a new activity-idea proposal, or (last resort)
+ * feedback/a feature request about the bot itself.
  *
  * Every rejection/no-match path (bad signature, unknown sender,
  * low-confidence classification) returns 2xx/4xx with a distinct,
@@ -182,6 +186,18 @@ export const voteWebhook = onRequest(
     if (idea.isIdea && idea.kind && idea.confidence >= CLASSIFY_CONFIDENCE_THRESHOLD) {
       await handleActivityIdea(db, phoneHash, { kind: idea.kind, activity: idea.activity });
       console.log(`voteWebhook: activity idea phoneHash=${phoneHash} kind=${idea.kind} confidence=${idea.confidence}`);
+      res.status(200).send("ok");
+      return;
+    }
+
+    const suggestion = await safeClassify(
+      `voteWebhook classifyFeatureSuggestion phoneHash=${phoneHash}`,
+      { isSuggestion: false, suggestion: "", confidence: 0 },
+      () => classifyFeatureSuggestion(message)
+    );
+    if (suggestion.isSuggestion && suggestion.confidence >= CLASSIFY_CONFIDENCE_THRESHOLD) {
+      await handleFeatureSuggestion(db, phoneHash, suggestion.suggestion);
+      console.log(`voteWebhook: feature suggestion phoneHash=${phoneHash} confidence=${suggestion.confidence}`);
       res.status(200).send("ok");
       return;
     }

@@ -4,6 +4,7 @@ import { safeClassify } from "./safeClassify";
 import { createInvite } from "./inviteHandler";
 import { createPoll } from "./pollCommandHandler";
 import { listMembers, removeMember, setCanHost, setIsAdmin } from "./memberManagementHandler";
+import { listFeatureSuggestions } from "./featureSuggestionHandler";
 import { sendOwnerHelpText } from "./helpHandler";
 
 /**
@@ -49,6 +50,9 @@ export async function handleOwnerNaturalLanguageFallback(
       return;
     case "list_members":
       await listMembers(db, replyTo);
+      return;
+    case "list_suggestions":
+      await listFeatureSuggestions(db, replyTo);
       return;
     case "help":
       await sendOwnerHelpText(replyTo);

@@ -10,12 +10,14 @@ const OWNER_HELP_TEXT = `Admin commands (or just describe what you want in plain
 - remove <name or phone> — remove a member
 - canhost <name or phone> yes|no — set who gets asked to host an activity idea
 - admin <name or phone> yes|no — promote or demote another admin
+- suggestions — review feature suggestions members have sent in
 - help — show this message`;
 
 const MEMBER_HELP_TEXT = `You're in the lunch poll group! No special format needed — just text naturally:
 - Reply to the weekly poll with a number, the restaurant name, or even loose ideas like "something spicy"
 - Say something like "let's have a game night, who can host?" or "let's go to Emerald Tavern" any time to propose an activity
 - If asked "want to host?" or "want to go?", just reply yes, no, or maybe, however you'd naturally say it
+- Got an idea for how this bot itself could be better? Just say so — it gets passed along
 - Text "help" any time to see this again`;
 
 /** Texts `replyTo` (the admin who asked) the admin command list. */

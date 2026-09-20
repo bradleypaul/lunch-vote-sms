@@ -90,6 +90,7 @@ business-messaging account (Twilio, etc.) at all.
     classifyPromptReply.ts        Haiku fallback for free-form yes/no/maybe prompt replies
     classifyOwnerIntent.ts        Haiku fallback covering every other admin command
     classifyPollTags.ts           Haiku call: option names -> best-effort optionTags
+    classifyFeatureSuggestion.ts  Haiku tool-use call: free text -> {isSuggestion, suggestion}
     safeClassify.ts               wraps a classifyX call, falls back instead of throwing
     pollUtils.ts                  shared findOpenPoll query
     generateDigest.ts             scheduled: tally + Haiku summary -> digest doc + SMS to owner
@@ -105,6 +106,7 @@ business-messaging account (Twilio, etc.) at all.
     helpHandler.ts                 "help" for the owner (admin commands) or a member (their commands)
     activityIdeaHandler.ts        creates an activity idea, prompts the relevant members
     promptReplyHandler.ts         resolves a member's reply to a pending host/outing prompt
+    featureSuggestionHandler.ts   records a feature suggestion, texts the owner, "suggestions" command
     sendAnnouncement.ts           scheduled: texts the week's poll to the group
     sendFinalAnnouncement.ts      texts the confirmed pick to the group
     gatewayClient.ts               SMS Gateway (sms-gate.app) Messages API wrapper (send message)
@@ -134,6 +136,7 @@ firebase.json
   (`kind`: `host_needed` | `outing`; `status`: `collecting` → `digested`)
 - `activityIdeas/{ideaId}/responses/{phoneHash}` — `{ response, receivedAt }`
   (`response`: `yes` | `no` | `maybe`)
+- `featureSuggestions/{id}` — `{ suggestion, proposerPhoneHash, createdAt }`
 
 `optionTags` is what lets loose sentiment ("something spicy") resolve to an
 actual option instead of the model guessing blind — e.g.
@@ -177,13 +180,14 @@ instant, not because it's required.
 | `remove <name or phone>` | "take Jake out of the group" | Deletes that member's `groupMembers` doc |
 | `canhost <name or phone> yes\|no` | "Jake can host from now on" | Sets whether that member gets asked to host a `host_needed` activity idea |
 | `admin <name or phone> yes\|no` | "make Jake an admin" | Promotes or demotes another admin (see **Admin promotion** below) |
+| `suggestions` | "what have people suggested" | Texts back every recorded feature suggestion (see **Feature suggestions** below) |
 
 Under the hood: `voteWebhook` first tries each command's exact syntax in
 turn (all free, instant, no API call — see `ADMIN_COMMAND_HANDLERS` in
 `voteWebhook.ts`), including `approve`/`override`'s own existing
 fast-path-then-Haiku-fallback (`approvalHandler.ts`). Only if *none* of
-those match does it fall through to `classifyOwnerIntent` (one Haiku
-call covering `invite`/`poll`/`members`/`remove`/`canhost`/`admin`/`help`)
+those match does it fall through to `classifyOwnerIntent` (one Haiku call
+covering `invite`/`poll`/`members`/`remove`/`canhost`/`admin`/`suggestions`/`help`)
 — see `ownerCommandHandler.ts`. Both paths call the same underlying
 Firestore actions and reply to whichever admin actually sent the command,
 so which path fires is invisible to you either way.
@@ -255,17 +259,36 @@ if so, which of two kinds:
   Emerald Tavern" or "let's go to the Red Poppy Festival"). Every other
   active member is asked.
 
-`activityIdeaHandler` creates the `activityIdeas` doc and texts each
-targeted member "want to host?" / "want to go?", setting a `pendingPrompt`
-on their `groupMembers` doc so their next reply is read as answering that
-question (via `promptReplyHandler`) rather than as a vote or a new idea.
-`generateIdeaDigest` runs hourly, and once an idea has been collecting
-responses for `IDEA_DIGEST_WINDOW_HOURS` (default 24), texts you a
-yes/maybe/no tally and marks it `digested`.
+`activityIdeaHandler` creates the `activityIdeas` doc, texts each targeted
+member "want to host?" / "want to go?" (setting a `pendingPrompt` on their
+`groupMembers` doc so their next reply is read as answering that question
+via `promptReplyHandler`, rather than as a vote or a new idea), and texts
+you an immediate heads-up that an idea came in. `generateIdeaDigest` runs
+hourly, and once an idea has been collecting responses for
+`IDEA_DIGEST_WINDOW_HOURS` (default 24), texts you the actual yes/maybe/no
+tally and marks it `digested` — the immediate text just tells you an idea
+exists, it doesn't wait for responses to come in.
 
 Same proposer-anonymity treatment as votes: the ask that goes out to
 targeted members never names who proposed it, and the idea doc stores only
 `proposerPhoneHash`, not a name or number.
+
+## Feature suggestions
+
+Separate from activity ideas — this is feedback about the bot *itself*
+("it'd be cool if you could also do dinner polls"), not a social plan.
+It's the last thing `voteWebhook` tries for an active member's message,
+after a pending prompt, a vote, and an activity idea have all failed to
+match: `classifyFeatureSuggestion` (Haiku) decides whether the text reads
+as bot feedback. A confident match gets stored in `featureSuggestions` and
+texts you immediately — there's no batching window like activity ideas
+have, since this isn't something other members need to weigh in on.
+Text **`suggestions`** (or ask in plain language) any time to get every
+suggestion texted back to you for review; deciding whether to actually
+build any of them is a manual call, not something this repo automates.
+
+Same proposer-anonymity treatment as votes and activity ideas: the doc
+stores only `proposerPhoneHash`.
 
 ## Webhook verification
 
@@ -435,10 +458,14 @@ on deploy, no separate `gcloud scheduler` setup needed.
   silently ignored, not an error).
 - **The Haiku-calling functions cost real API calls.** `classifyVote`,
   `classifyApprovalReply`, `classifyActivityIdea`, `classifyPromptReply`,
-  `classifyOwnerIntent`, `classifyPollTags`, and `generateDigest`'s summary
-  step all hit the Anthropic API live, including against the local
-  emulator — see **Cost notes** for expected volume/cost, but there's no
-  offline/mock mode built in.
+  `classifyOwnerIntent`, `classifyPollTags`, `classifyFeatureSuggestion`,
+  and `generateDigest`'s summary step all hit the Anthropic API live,
+  including against the local emulator — see **Cost notes** for expected
+  volume/cost, but there's no offline/mock mode built in. Note that an
+  active member's unmatched message can chain up to three of these calls
+  in sequence (vote, then activity idea, then feature suggestion) before
+  giving up — still pennies in practice, but worth knowing if you're
+  watching latency on a slow reply.
 - **Depends on one phone staying online.** Delivery and inbound replies
   both route through the SMS Gateway app on a single device — if it's
   off, out of battery, or disconnected, texts queue up (or are missed

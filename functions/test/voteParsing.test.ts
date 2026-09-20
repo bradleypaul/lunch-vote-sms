@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isHelpCommand,
   isMembersCommand,
+  isSuggestionsCommand,
   normalizeText,
   parseAdminCommand,
   parseApprovalReply,
@@ -208,6 +209,18 @@ describe("isMembersCommand", () => {
   it("returns false for anything else", () => {
     expect(isMembersCommand("member")).toBe(false);
     expect(isMembersCommand("list members")).toBe(false);
+  });
+});
+
+describe("isSuggestionsCommand", () => {
+  it("recognizes suggestions case-insensitively", () => {
+    expect(isSuggestionsCommand("suggestions")).toBe(true);
+    expect(isSuggestionsCommand("Suggestions")).toBe(true);
+  });
+
+  it("returns false for anything else", () => {
+    expect(isSuggestionsCommand("suggestion")).toBe(false);
+    expect(isSuggestionsCommand("list suggestions")).toBe(false);
   });
 });
 

@@ -8,6 +8,7 @@ export type OwnerIntent =
   | { action: "set_can_host"; who: string; canHost: boolean }
   | { action: "set_is_admin"; who: string; isAdmin: boolean }
   | { action: "list_members" }
+  | { action: "list_suggestions" }
   | { action: "help" };
 
 const CLASSIFY_OWNER_INTENT_TOOL: Anthropic.Tool = {
@@ -20,15 +21,25 @@ const CLASSIFY_OWNER_INTENT_TOOL: Anthropic.Tool = {
     properties: {
       action: {
         type: "string",
-        enum: ["invite", "create_poll", "remove_member", "set_can_host", "set_is_admin", "list_members", "help", "none"],
+        enum: [
+          "invite",
+          "create_poll",
+          "remove_member",
+          "set_can_host",
+          "set_is_admin",
+          "list_members",
+          "list_suggestions",
+          "help",
+          "none",
+        ],
         description:
           "\"invite\" to add a new person; \"create_poll\" to start a new lunch poll with a list of options; " +
           "\"remove_member\" to delete someone from the group; \"set_can_host\" to change whether someone can " +
           "be asked to host an activity; \"set_is_admin\" to promote or demote someone as an admin (giving or " +
           "taking away access to these same admin commands); \"list_members\" to see everyone in the group; " +
-          "\"help\" if they're asking what they can do; \"none\" if the message doesn't clearly ask for any of " +
-          "these (e.g. it's approving/overriding a digest, which is handled elsewhere, or isn't an admin " +
-          "request at all).",
+          "\"list_suggestions\" to review feature suggestions members have sent in; \"help\" if they're asking " +
+          "what they can do; \"none\" if the message doesn't clearly ask for any of these (e.g. it's " +
+          "approving/overriding a digest, which is handled elsewhere, or isn't an admin request at all).",
       },
       invitee_name: {
         type: "string",
@@ -148,6 +159,8 @@ export async function classifyOwnerIntent(message: string, confidenceThreshold: 
     }
     case "list_members":
       return { action: "list_members" };
+    case "list_suggestions":
+      return { action: "list_suggestions" };
     case "help":
       return { action: "help" };
     default:

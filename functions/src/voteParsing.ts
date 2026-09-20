@@ -155,9 +155,14 @@ export function isHelpCommand(rawBody: string): boolean {
   return normalizeText(rawBody) === "help";
 }
 
-/** True if the message is exactly the owner's "members" command (list all group members). */
+/** True if the message is exactly the admin's "members" command (list all group members). */
 export function isMembersCommand(rawBody: string): boolean {
   return normalizeText(rawBody) === "members";
+}
+
+/** True if the message is exactly the admin's "suggestions" command (list feature suggestions). */
+export function isSuggestionsCommand(rawBody: string): boolean {
+  return normalizeText(rawBody) === "suggestions";
 }
 
 export interface RemoveCommand {
